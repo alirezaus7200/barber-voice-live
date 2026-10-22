@@ -1,0 +1,16 @@
+{
+  "name": "barber-voice-live",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Phone calls for barber-core salons with Google Gemini Live (speech to speech, any language) over Twilio.",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "start": "node --experimental-strip-types src/server.ts",
+    "dev": "node --env-file=.env --experimental-strip-types src/server.ts",
+    "test": "node --experimental-strip-types --test test/*.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": { "ws": "^8.18.0" },
+  "devDependencies": { "@types/node": "^22.10.0", "@types/ws": "^8.5.13", "typescript": "^5.7.2" }
+}

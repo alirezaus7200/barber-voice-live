@@ -1,0 +1,106 @@
+// A whole call with fake sockets: barber-core's opening, the setup sent to Gemini, audio both ways,
+// a tool call through barber-core, a transfer to the salon, and the end-of-call report.
+import { describe, it } from 'node:test';
+import assert from 'node:assert/strict';
+import { CallSession, type SessionDeps } from '../src/session.ts';
+import { pcm16ToMulaw } from '../src/audio.ts';
+
+function harness(startAnswer: any, toolAnswer: (list: any[]) => any[] = () => []) {
+  const sentToGemini: any[] = [];
+  const sentToTwilio: any[] = [];
+  const core: any[] = [];
+  const updates: string[] = [];
+  const timers: { ms: number; fn: () => void }[] = [];
+  let gem: any;
+  const deps: SessionDeps = {
+    core: {
+      start: async (c: any) => { core.push(['start', c]); return startAnswer; },
+      tools: async (c: any, list: any[]) => { core.push(['tools', list]); return toolAnswer(list); },
+      end: async (c: any, x: any) => { core.push(['end', x]); return {}; },
+    } as any,
+    openGemini: (h) => { gem = h; return { send: (d) => sentToGemini.push(JSON.parse(d)), close: () => {} }; },
+    updateCall: async (_sid, twiml) => { updates.push(twiml); return { ok: true }; },
+    prompt: 'You answer for {{shop_name}}.', model: 'live-model', voice: 'Kore',
+    setTimer: (ms, fn) => { timers.push({ ms, fn }); return timers.length; }, clearTimer: () => {},
+    now: () => new Date('2026-10-22T15:00:00Z'), log: () => {},
+  };
+  const s = new CallSession(deps, { send: (d) => sentToTwilio.push(JSON.parse(d)), close: () => {} });
+  return { s, sentToGemini, sentToTwilio, core, updates, timers, gem: () => gem };
+}
+const ids = { callSid: 'CA' + '1'.repeat(32), to: '+14013295007', from: '+12013702511' };
+const OPEN = { assistantId: 'x', assistantOverrides: { firstMessage: 'با Test Salon تماس گرفته‌اید. من دستیار هوش مصنوعی هستم و این تماس ممکن است ضبط شود.', maxDurationSeconds: 120, variableValues: { shop_name: 'Test Salon' } } };
+
+describe('a call', () => {
+  it('opens Gemini with the salon prompt, voice and tools; says the opening first; carries audio both ways', async () => {
+    const h = harness(OPEN);
+    await h.s.start('MZ1', ids);
+    assert.deepEqual(h.core[0], ['start', { callId: ids.callSid, callSid: ids.callSid, to: ids.to, from: ids.from }]);
+    h.gem().onOpen();
+    const setup = h.sentToGemini[0].setup;
+    assert.equal(setup.model, 'models/live-model');
+    assert.equal(setup.systemInstruction.parts[0].text, 'You answer for Test Salon.');
+    assert.equal(setup.generationConfig.speechConfig.voiceConfig.prebuiltVoiceConfig.voiceName, 'Kore');
+    assert.ok(setup.tools[0].functionDeclarations.some((d: any) => d.name === 'book_appointment'));
+    assert.equal(h.timers[0].ms, 120_000); // the salon's call limit
+    h.s.fromCaller(pcm16ToMulaw(Buffer.alloc(160)).toString('base64'));
+    assert.equal(h.sentToGemini.length, 1, 'no audio before Gemini is ready');
+    h.gem().onMessage(JSON.stringify({ setupComplete: {} }));
+    assert.match(h.sentToGemini[1].clientContent.turns[0].parts[0].text, /این تماس ممکن است ضبط شود/);
+    h.s.fromCaller(pcm16ToMulaw(Buffer.alloc(160)).toString('base64'));
+    assert.equal(h.sentToGemini[2].realtimeInput.audio.mimeType, 'audio/pcm;rate=16000');
+    h.gem().onMessage(JSON.stringify({ serverContent: { modelTurn: { parts: [{ inlineData: { mimeType: 'audio/pcm;rate=24000', data: Buffer.alloc(480).toString('base64') } }] } } }));
+    assert.equal(h.sentToTwilio[0].event, 'media');
+    assert.equal(Buffer.from(h.sentToTwilio[0].media.payload, 'base64').length, 80);
+    h.gem().onMessage(JSON.stringify({ serverContent: { interrupted: true } }));
+    assert.equal(h.sentToTwilio[1].event, 'clear');
+  });
+
+  it('tools go to barber-core and their results back to Gemini; a yes from transfer_to_human moves the call', async () => {
+    const h = harness(OPEN, (list) => list.map((t) => ({ toolCallId: t.id, name: t.name,
+      result: t.name === 'transfer_to_human' ? '{"ok":true,"transfer_to":"+14015550100"}' : '{"ok":true,"slots":[]}' })));
+    await h.s.start('MZ1', ids);
+    h.gem().onOpen();
+    await h.gem().onMessage(JSON.stringify({ toolCall: { functionCalls: [{ id: 'f1', name: 'check_availability', args: { date: '2026-10-23' } }, { id: 'f2', name: 'nope' }] } }));
+    await new Promise((r) => setImmediate(r));
+    assert.deepEqual(h.core[1], ['tools', [{ id: 'f1', name: 'check_availability', args: { date: '2026-10-23' } }]]);
+    const resp = h.sentToGemini.at(-1).toolResponse.functionResponses;
+    assert.deepEqual(resp, [{ id: 'f1', name: 'check_availability', response: { ok: true, slots: [] } }, { id: 'f2', name: 'nope', response: { ok: false, reason: 'unknown_tool' } }]);
+    await h.gem().onMessage(JSON.stringify({ toolCall: { functionCalls: [{ id: 'f3', name: 'transfer_to_human', args: {} }] } }));
+    await new Promise((r) => setImmediate(r));
+    const t = h.timers.at(-1)!;
+    assert.equal(t.ms, 4000);
+    t.fn();
+    await new Promise((r) => setImmediate(r));
+    assert.match(h.updates[0], /<Number>\+14015550100<\/Number>/);
+    assert.match(h.updates[0], /callerId="\+12013702511"/);
+    assert.deepEqual(h.core.at(-1), ['end', { startedAt: '2026-10-22T15:00:00.000Z', endedAt: '2026-10-22T15:00:00.000Z', endedReason: 'assistant-forwarded-call' }]);
+  });
+
+  it('barber-core says the number cannot take calls: a short notice and hang up, no Gemini', async () => {
+    const h = harness({ error: 'Sorry, this number cannot take calls right now.' });
+    await h.s.start('MZ1', ids);
+    assert.equal(h.gem(), undefined);
+    assert.match(h.updates[0], /<Say>Sorry, this number cannot take calls right now.<\/Say><Hangup\/>/);
+    assert.equal(h.core.at(-1)[0], 'end');
+  });
+
+  it('the AI is turned off for the salon: the call goes straight to its transfer number', async () => {
+    const h = harness({ destination: { type: 'number', number: '+14015550100' } });
+    await h.s.start('MZ1', ids);
+    assert.match(h.updates[0], /<Number>\+14015550100<\/Number>/);
+  });
+
+  it('a failed tool call is a system_error for the AI (it then offers a person or a message), and end_call hangs up once', async () => {
+    const h = harness(OPEN, () => { throw new Error('down'); });
+    await h.s.start('MZ1', ids);
+    h.gem().onOpen();
+    await h.gem().onMessage(JSON.stringify({ toolCall: { functionCalls: [{ id: 'f1', name: 'book_appointment', args: {} }, { id: 'f2', name: 'end_call' }] } }));
+    await new Promise((r) => setImmediate(r));
+    assert.deepEqual(h.sentToGemini.at(-1).toolResponse.functionResponses[0].response, { ok: false, reason: 'system_error' });
+    h.timers.at(-1)!.fn();
+    await new Promise((r) => setImmediate(r));
+    await h.s.finish();
+    assert.equal(h.core.filter((c) => c[0] === 'end').length, 1);
+    assert.equal(h.core.at(-1)[1].endedReason, 'assistant-ended-call');
+  });
+});
