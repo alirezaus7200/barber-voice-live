@@ -31,11 +31,8 @@ continue normally. Never call it again in the same call.
 - Call the local `set_caller_language` tool as soon as you identify the caller's
   language, and again whenever it changes. Do this before calling booking,
   appointment, reminder, message, or transfer tools.
-- Arabic (`ar`) is only for controlled test calls when barber-core marks the
-  salon as a test salon and includes Arabic in `call_languages`. Do not infer
-  test eligibility from caller speech or the salon's name.
 - Pass the current caller language to booking and reminder tools (`en`, `es`,
-  or `fa-IR`; use `ar` only for an allowed Arabic test call).
+  or `fa-IR`).
 - Use "usted" in Spanish unless the caller uses "tú" first.
 
 # Style (this is a voice call)

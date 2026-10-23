@@ -81,15 +81,19 @@ describe('tools and settings', () => {
     assert.equal(by.check_availability.parameters.type, 'OBJECT');
     assert.equal(by.check_availability.parameters.properties.service_ids.items.type, 'STRING');
     assert.equal(by.find_my_appointments.parameters, undefined);
-    assert.deepEqual(by.set_caller_language.parameters.properties.language.enum, ['en', 'es', 'fa-IR', 'ar']);
+    assert.deepEqual(by.set_caller_language.parameters.properties.language.enum, ['en', 'es', 'fa-IR']);
     assert.ok(by.set_caller_language && by.end_call && by.transfer_to_human && by.take_message);
   });
   it('refuses missing or weak settings', () => {
     const ok = { PUBLIC_URL: 'https://voice.example', TWILIO_ACCOUNT_SID: 'AC1', TWILIO_AUTH_TOKEN: 't', CORE_WEBHOOK_URL: 'https://core.example/api/webhooks/vapi',
       CORE_WEBHOOK_SECRET: 'c'.repeat(32), STREAM_SECRET: 's'.repeat(32), GEMINI_API_KEY: 'g', GEMINI_LIVE_MODEL: 'm' };
     assert.equal(loadConfig(ok).geminiVoice, 'Kore');
+    assert.equal(loadConfig(ok).port, 8888);
+    assert.equal(loadConfig({ ...ok, PORT: '9123' }).port, 9123);
     assert.throws(() => loadConfig({ ...ok, GEMINI_API_KEY: '' }), /GEMINI_API_KEY/);
     assert.throws(() => loadConfig({ ...ok, PUBLIC_URL: 'http://voice.example' }), /PUBLIC_URL/);
+    assert.throws(() => loadConfig({ ...ok, PUBLIC_URL: 'https://voice.example/مسیر' }), /PUBLIC_URL/);
+    assert.throws(() => loadConfig({ ...ok, PORT: '0' }), /PORT/);
     assert.throws(() => loadConfig({ ...ok, STREAM_SECRET: 'short' }), /32/);
   });
 });

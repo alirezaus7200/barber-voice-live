@@ -1,7 +1,8 @@
 # barber-voice-live
 
-منشی تلفنی سالن‌ها با **Gemini Live** گوگل: خودش می‌شنود و حرف می‌زند، به هر زبانی، و مشتری می‌تواند
-وسط تماس زبان را عوض کند (فارسی، انگلیسی، اسپانیایی، فرانسوی…). خط تلفن از **Twilio** است.
+منشی تلفنی سالن‌ها با **Gemini Live** گوگل: تماس را به‌صورت زنده می‌شنود و پاسخ صوتی می‌دهد.
+زبان‌های فعال انگلیسی، اسپانیایی و فارسی هستند و مشتری می‌تواند وسط تماس بین آن‌ها جابه‌جا شود.
+خط تلفن از **Twilio** است.
 
 این پروژه **فقط صدا** است. همه‌چیزِ سالن‌ها (آرایشگرها، ساعت‌ها، نوبت‌ها، قانون‌ها، پیام‌ها، گزارش تماس)
 در پروژه‌ی اصلی **barber-core** است و این سرور برای هر کاری از آن می‌پرسد، با همان امضای امنی که Vapi
@@ -17,13 +18,42 @@
 - ✅ کد و تست‌ها (بدون اینترنت، با سوکت‌های ساختگی): صدا در دو جهت، ابزارها، انتقال تماس، جمله‌ی اول، پایان تماس.
 - ⏳ هنوز روی سرور واقعی اجرا نشده و با تماس واقعی امتحان نشده. اسم دقیق مدل Gemini Live را از AI Studio برمی‌داریم.
 
-## راه‌اندازی (خلاصه، بعداً قدم‌به‌قدم)
-1. یک میزبان که WebSocket را در تمام تماس باز نگه دارد (مثلاً Google Cloud Run، Railway یا Fly.io). Vercel مناسب نیست.
-2. متغیرهای `.env.example` را در تنظیمات میزبان بگذار (هرگز در کد یا گیت).
-3. در Twilio یک شماره بخر و برای «A call comes in» آدرس `https://<این سرور>/twilio/voice` (POST) را بگذار.
-4. در barber-core همان شماره را به سالن وصل کن (`scripts/add-phone-number.ts`، با `--provider twilio`).
+## اجرای محلی در Windows PowerShell
+1. Node.js نسخهٔ ۲۲ یا جدیدتر و وابستگی‌های پروژه را داشته باشید. در پوشهٔ پروژه اجرا کنید:
+
+   ```powershell
+   npm.cmd ci
+   npm.cmd test
+   npm.cmd run typecheck
+   ```
+
+2. `.env.example` را به `.env` کپی کنید و تنظیمات محلی Twilio، Gemini Live و barber-core را وارد کنید. فایل `.env` را به Git اضافه نکنید.
+3. سرور محلی را اجرا کنید:
+
+   ```powershell
+   npm.cmd run dev
+   ```
+
+4. در پنجرهٔ PowerShell دیگری سلامت سرور را بررسی کنید:
+
+   ```powershell
+   Invoke-RestMethod http://localhost:8888/health
+   ```
+
+   پاسخ مورد انتظار `ok` است. اگر پورت اشغال است، پردازشی که آن را گرفته بررسی و متوقف کنید؛ سرور دوم را روی همان پورت اجرا نکنید.
+
+اجرای محلی برای توسعه و تست‌های خودکار به سرور ابری نیاز ندارد. برای دریافت تماس واقعی، Twilio باید بتواند به رایانه دسترسی HTTP عمومی داشته باشد؛ ngrok می‌تواند این رایانه را موقتاً در معرض اینترنت بگذارد، اما فقط وقتی برنامه و تونل هر دو روشن باشند. در پنجرهٔ دوم، تونل را به پورت واقعی برنامه وصل کنید:
+
+```powershell
+ngrok.exe http 8888
+```
+
+نشانی HTTPS فعالی که ngrok نشان می‌دهد باید در `PUBLIC_URL` و نشانی webhook ورودی Twilio با مسیر `/twilio/voice` استفاده شود. تنظیمات حساب Twilio را این پروژه تغییر نمی‌دهد.
+
+## پیش‌نیازهای تماس واقعی
+تماس زنده به تنظیمات معتبر Twilio و شمارهٔ ورودی که webhook آن به نشانی عمومی `/twilio/voice` اشاره کند، کلید Gemini Live، و نشانی و راز webhook پروژهٔ barber-core نیاز دارد. سرویس‌های بیرونی یا هزینه‌ها در تست‌های خودکار استفاده نمی‌شوند.
 
 ## English
-Phone calls for barber-core salons with Google Gemini Live (speech to speech, any language) over Twilio.
+Phone calls for barber-core salons with Google Gemini Live in English, Spanish and Persian over Twilio.
 Bookings and rules stay in barber-core; this server calls its signed voice webhook. See CLAUDE.md.
 `npm ci && npm run typecheck && npm test`.

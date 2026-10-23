@@ -1,5 +1,5 @@
 // One phone call: Twilio's media socket on one side, a Gemini Live session on the other, barber-core
-// for everything about the salon. Gemini hears and speaks every language itself, so the caller may
+// for everything about the salon. Gemini hears and speaks English, Spanish and Persian, so the caller may
 // switch language at any time. The salon, the caller and the call id come from Twilio (signed), never
 // from what anyone says. Timers and sockets are passed in, so the whole flow runs in tests.
 import { geminiToPhone, phoneToGemini } from './audio.ts';
@@ -39,7 +39,6 @@ export class CallSession {
   private openingPlayed = false;
   private openingAudioEmitted = false;
   private openingMarkName = '';
-  private arabicTestEligible = false;
   private callerLanguage = '';
   private defaultLanguage = '';
   // Twilio can begin sending audio before barber-core and Gemini finish setting up.
@@ -70,7 +69,6 @@ export class CallSession {
     if (typeof r?.error === 'string' || !r?.assistantOverrides) return this.handOff(sayTwiml(String(r?.error ?? '')), 'assistant-request-returned-error');
     const o = r.assistantOverrides;
     this.opening = String(o.firstMessage ?? '');
-    this.arabicTestEligible = isArabicTestEligible(o.variableValues ?? {});
     this.defaultLanguage = String(o.variableValues?.default_language ?? '');
     const max = Number(o.maxDurationSeconds) > 0 ? Number(o.maxDurationSeconds) : 600;
     this.timers.push(this.deps.setTimer(max * 1000, () => { this.endedReason = 'exceeded-max-duration'; void this.hangUp(); }));
@@ -104,7 +102,7 @@ export class CallSession {
   }
 
   private openingInstructions() {
-    return `# First response and language\nThe first response is barber-core's canonical opening below. Say it exactly as written, word for word, before responding to the caller. Do not translate, paraphrase, shorten, or omit it. It contains the AI disclosure and recording notice. Wait until this opening has finished playing before using any tool or handling the caller's request.\n\nEnglish, Spanish and Persian (fa-IR) are production languages for every salon. Once the caller speaks, detect their language from their first sentence, reply in that language automatically without asking them to choose, and switch among these three languages whenever the caller switches. Call set_caller_language with the identified code before taking any action and whenever the caller switches. Use Arabic only when code confirms Arabic test eligibility: ${this.arabicTestEligible ? 'eligible for this test salon' : 'not eligible'}. Never infer Arabic test eligibility yourself. For booking and reminder tools, pass the caller's current language code: en, es, or fa-IR (Arabic test calls use ar). Preserve salon settings, booking rules, and existing tool behavior.\n\nCanonical barber-core firstMessage: ${JSON.stringify(this.opening)}`;
+    return `# First response and language\nThe first response is barber-core's canonical opening below. Say it exactly as written, word for word, before responding to the caller. Do not translate, paraphrase, shorten, or omit it. It contains the AI disclosure and recording notice. Wait until this opening has finished playing before using any tool or handling the caller's request.\n\nEnglish, Spanish and Persian (fa-IR) are the only supported languages. Once the caller speaks, detect their language from their first sentence, reply in that language automatically without asking them to choose, and switch among these three languages whenever the caller switches. Call set_caller_language with the identified code before taking any action and whenever the caller switches. For booking and reminder tools, pass the caller's current language code: en, es, or fa-IR. Preserve salon settings, booking rules, and existing tool behavior.\n\nCanonical barber-core firstMessage: ${JSON.stringify(this.opening)}`;
   }
 
   private async fromGemini(text: string) {
@@ -151,13 +149,13 @@ export class CallSession {
     const argLanguage = calls.map((c) => (c.args as any)?.language).find((language) => typeof language === 'string');
     const requestedLanguage = typeof toolLanguage === 'string' ? toolLanguage : typeof argLanguage === 'string' ? argLanguage : '';
     if (requestedLanguage) this.callerLanguage = requestedLanguage;
-    const deniedActiveLanguage = !!this.callerLanguage && !isAllowedCallerLanguage(this.callerLanguage, this.arabicTestEligible);
-    const hasDisallowedExplicitLanguage = calls.some((c) => CORE_TOOL_NAMES.has(c.name) && typeof (c.args as any)?.language === 'string' && !isAllowedCallerLanguage((c.args as any).language, this.arabicTestEligible));
+    const deniedActiveLanguage = !!this.callerLanguage && !isAllowedCallerLanguage(this.callerLanguage);
+    const hasDisallowedExplicitLanguage = calls.some((c) => CORE_TOOL_NAMES.has(c.name) && typeof (c.args as any)?.language === 'string' && !isAllowedCallerLanguage((c.args as any).language));
     const responses: { id: string; name: string; response: unknown }[] = [];
     const blockedLanguageCalls = new Set(calls.filter((c) => {
       if (!CORE_TOOL_NAMES.has(c.name)) return false;
       const language = (c.args as any)?.language || this.callerLanguage || (c.name === 'previous_visit_reminder' ? this.defaultLanguage : '');
-      return deniedActiveLanguage || hasDisallowedExplicitLanguage || !isAllowedCallerLanguage(language, this.arabicTestEligible);
+      return deniedActiveLanguage || hasDisallowedExplicitLanguage || !isAllowedCallerLanguage(language);
     }).map((c) => c.id));
     const forCore = calls.filter((c) => CORE_TOOL_NAMES.has(c.name) && !blockedLanguageCalls.has(c.id));
     let results: { toolCallId: string; result: string }[] = [];
@@ -171,12 +169,12 @@ export class CallSession {
     for (const c of calls) {
       if (c.name === 'set_caller_language') {
         const language = (c.args as any)?.language;
-        const accepted = isAllowedCallerLanguage(language, this.arabicTestEligible);
+        const accepted = isAllowedCallerLanguage(language);
         responses.push({ id: c.id, name: c.name, response: accepted ? { ok: true, language } : { ok: false, reason: 'language_not_enabled' } });
         continue;
       }
       if (c.name === 'end_call') {
-        if (!isAllowedCallerLanguage(this.callerLanguage, this.arabicTestEligible)) { responses.push({ id: c.id, name: c.name, response: { ok: false, reason: 'language_not_enabled' } }); continue; }
+        if (!isAllowedCallerLanguage(this.callerLanguage)) { responses.push({ id: c.id, name: c.name, response: { ok: false, reason: 'language_not_enabled' } }); continue; }
         responses.push({ id: c.id, name: c.name, response: { ok: true } });
         this.endedReason = 'assistant-ended-call';
         this.timers.push(this.deps.setTimer(HANGUP_DELAY_MS, () => void this.hangUp()));
@@ -225,17 +223,6 @@ export class CallSession {
   }
 }
 
-function isArabicLanguage(value: unknown): boolean {
-  return typeof value === 'string' && /^ar(?:-|$)/i.test(value.trim());
-}
-
-function isAllowedCallerLanguage(value: unknown, arabicTestEligible: boolean): boolean {
-  return value === 'en' || value === 'es' || value === 'fa-IR' || isArabicLanguage(value) && arabicTestEligible;
-}
-
-function isArabicTestEligible(values: Record<string, unknown>): boolean {
-  const isTest = values.is_test === true || (typeof values.is_test === 'string' && values.is_test.trim().toLowerCase() === 'true');
-  const languages = values.call_languages;
-  const codes = Array.isArray(languages) ? languages : typeof languages === 'string' ? languages.split(/[\s,;|]+/) : [];
-  return isTest && codes.some((code) => typeof code === 'string' && (/^ar(?:-|$)/i.test(code.trim()) || /^arabic$/i.test(code.trim())));
+function isAllowedCallerLanguage(value: unknown): boolean {
+  return value === 'en' || value === 'es' || value === 'fa-IR';
 }
