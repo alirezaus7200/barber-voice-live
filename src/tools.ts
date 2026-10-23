@@ -77,6 +77,7 @@ export const CORE_TOOLS = [
 ] as const;
 
 export const LOCAL_TOOLS = [
+  { name: 'set_caller_language', description: 'Records the language the caller is currently speaking before any booking or appointment action. Call at call start and whenever the caller switches.', parameters: { type: 'object', properties: { language: { type: 'string', enum: ['en', 'es', 'fa-IR', 'ar'] } }, required: ['language'] } },
   { name: 'end_call', description: 'Hangs up, after you said goodbye and the caller has nothing else.', parameters: null },
 ] as const;
 

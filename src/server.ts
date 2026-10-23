@@ -75,6 +75,8 @@ wss.on('connection', (twilio) => {
       await session.start(String(m.start?.streamSid ?? ''), p);
     } else if (m.event === 'media' && typeof m.media?.payload === 'string') {
       session?.fromCaller(m.media.payload);
+    } else if (m.event === 'mark' && typeof m.mark?.name === 'string') {
+      await session?.fromTwilioMark(m.mark.name);
     } else if (m.event === 'stop') {
       await session?.finish();
     }
