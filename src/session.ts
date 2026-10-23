@@ -66,7 +66,13 @@ export class CallSession {
       r = { error: 'Sorry, this number cannot take calls right now. Please try again later.' };
     }
     if (r?.destination?.number) return this.handOff(dialTwiml(r.destination.number, p.from) ?? sayTwiml(''), 'assistant-forwarded-call');
-    if (typeof r?.error === 'string' || !r?.assistantOverrides) return this.handOff(sayTwiml(String(r?.error ?? '')), 'assistant-request-returned-error');
+    if (typeof r?.error === 'string' || !r?.assistantOverrides) {
+      this.deps.log('core_start_rejected', {
+        call: p.callSid,
+        error: typeof r?.error === 'string' ? r.error.slice(0, 300) : 'assistantOverrides missing',
+      });
+      return this.handOff(sayTwiml(String(r?.error ?? '')), 'assistant-request-returned-error');
+    }
     const o = r.assistantOverrides;
     this.opening = String(o.firstMessage ?? '');
     this.defaultLanguage = String(o.variableValues?.default_language ?? '');
