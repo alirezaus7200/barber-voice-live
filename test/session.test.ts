@@ -125,7 +125,7 @@ describe('a call', () => {
     assert.equal(setup.realtimeInputConfig.automaticActivityDetection.silenceDurationMs, 300);
   });
 
-  it('after 20 seconds of silence from the caller, the AI thanks them and asks them to call again to book (once)', async () => {
+  it('after 30 seconds of silence from the caller, the AI thanks them and asks them to call again to book (once)', async () => {
     const clock = { t: Date.parse('2026-10-22T15:00:00Z') };
     const h = harness(OPEN, () => [], clock);
     await h.s.start('MZ1', ids);
@@ -135,12 +135,13 @@ describe('a call', () => {
     const silent = Buffer.alloc(160, 0xff).toString('base64'); // mu-law silence
     const loud = Buffer.alloc(160, 0x00).toString('base64'); // mu-law at full volume
     clock.t += 5000; h.s.fromCaller(loud); // the caller speaks: the clock restarts
-    clock.t += 19000; h.s.fromCaller(silent);
-    assert.equal(h.sentToGemini.filter((m) => m.clientContent).length, 1, 'no nudge yet, 19 seconds of silence');
+    clock.t += 29000; h.s.fromCaller(silent);
+    assert.equal(h.sentToGemini.filter((m) => m.clientContent).length, 1, 'no nudge yet, 29 seconds of silence');
     clock.t += 2000; h.s.fromCaller(silent);
-    clock.t += 3000; h.s.fromCaller(silent);
+    clock.t += 1000; h.s.fromCaller(silent);
     const nudges = h.sentToGemini.filter((m) => m.clientContent);
     assert.equal(nudges.length, 2, 'the opening, then one nudge');
-    assert.match(nudges[1].clientContent.turns[0].parts[0].text, /20 seconds.*call again.*end_call/s);
+    assert.match(nudges[1].clientContent.turns[0].parts[0].text, /30 seconds.*call again.*end_call/s);
+    assert.deepEqual(h.logs.find(([e]) => e === 'silence_nudge'), ['silence_nudge', { silentSeconds: 31 }]);
   });
 });
