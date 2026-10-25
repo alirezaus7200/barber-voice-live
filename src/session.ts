@@ -87,6 +87,8 @@ export class CallSession {
   private async fromGemini(text: string) {
     let m: any;
     try { m = JSON.parse(text); } catch { return; }
+    // Gemini says it will close the session soon (goAway): log why, so a short call can be explained
+    if (m.goAway) this.deps.log('gemini_go_away', { timeLeft: String(m.goAway.timeLeft ?? '') });
     if (m.setupComplete) {
       this.ready = true;
       // the AI disclosure and the recording notice come first, word for word (barber-core's opening)
@@ -125,6 +127,7 @@ export class CallSession {
       const raw = results.find((x) => x.toolCallId === c.id)?.result;
       let result: any = { ok: false, reason: 'system_error' };
       try { if (raw) result = JSON.parse(raw); } catch { /* keep system_error */ }
+      this.deps.log('tool_result', { tool: c.name, ok: result?.ok === true });
       responses.push({ id: c.id, name: c.name, response: result });
       // barber-core said a person can take the call now (only while the salon is open): move it there
       if (c.name === 'transfer_to_human' && result?.ok === true && typeof result.transfer_to === 'string') {
