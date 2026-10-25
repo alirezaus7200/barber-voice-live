@@ -5,12 +5,13 @@ import assert from 'node:assert/strict';
 import { CallSession, type SessionDeps } from '../src/session.ts';
 import { pcm16ToMulaw } from '../src/audio.ts';
 
-function harness(startAnswer: any, toolAnswer: (list: any[]) => any[] = () => []) {
+function harness(startAnswer: any, toolAnswer: (list: any[]) => any[] = () => [], clock = { t: Date.parse('2026-10-22T15:00:00Z') }) {
   const sentToGemini: any[] = [];
   const sentToTwilio: any[] = [];
   const core: any[] = [];
   const updates: string[] = [];
   const timers: { ms: number; fn: () => void }[] = [];
+  const logs: [string, any][] = [];
   let gem: any;
   const deps: SessionDeps = {
     core: {
@@ -22,10 +23,10 @@ function harness(startAnswer: any, toolAnswer: (list: any[]) => any[] = () => []
     updateCall: async (_sid, twiml) => { updates.push(twiml); return { ok: true }; },
     prompt: 'You answer for {{shop_name}}.', model: 'live-model', voice: 'Kore',
     setTimer: (ms, fn) => { timers.push({ ms, fn }); return timers.length; }, clearTimer: () => {},
-    now: () => new Date('2026-10-22T15:00:00Z'), log: () => {},
+    now: () => new Date(clock.t), log: (event, data) => logs.push([event, data]),
   };
   const s = new CallSession(deps, { send: (d) => sentToTwilio.push(JSON.parse(d)), close: () => {} });
-  return { s, sentToGemini, sentToTwilio, core, updates, timers, gem: () => gem };
+  return { s, sentToGemini, sentToTwilio, core, updates, timers, logs, gem: () => gem };
 }
 const ids = { callSid: 'CA' + '1'.repeat(32), to: '+14013295007', from: '+12013702511' };
 const OPEN = { assistantId: 'x', assistantOverrides: { firstMessage: 'با Test Salon تماس گرفته‌اید. من دستیار هوش مصنوعی هستم و این تماس ممکن است ضبط شود.', maxDurationSeconds: 120, variableValues: { shop_name: 'Test Salon' } } };
@@ -102,5 +103,44 @@ describe('a call', () => {
     await h.s.finish();
     assert.equal(h.core.filter((c) => c[0] === 'end').length, 1);
     assert.equal(h.core.at(-1)[1].endedReason, 'assistant-ended-call');
+  });
+
+  it('logs what Gemini says that ends a call (goAway) and each tool result (name and ok only, never the arguments)', async () => {
+    const h = harness(OPEN, () => [{ toolCallId: 'f1', name: 'check_availability', result: '{"ok":true,"slots":["10:00"]}' }]);
+    await h.s.start('MZ1', ids);
+    h.gem().onOpen();
+    await h.gem().onMessage(JSON.stringify({ goAway: { timeLeft: '30s' } }));
+    await h.gem().onMessage(JSON.stringify({ toolCall: { functionCalls: [{ id: 'f1', name: 'check_availability', args: { date: '2026-10-23', name: 'Dana' } }] } }));
+    await new Promise((r) => setImmediate(r));
+    assert.deepEqual(h.logs.find(([e]) => e === 'gemini_go_away'), ['gemini_go_away', { timeLeft: '30s' }]);
+    assert.deepEqual(h.logs.find(([e]) => e === 'tool_result'), ['tool_result', { tool: 'check_availability', ok: true }]);
+    assert.doesNotMatch(JSON.stringify(h.logs), /Dana|2026-10-23/);
+  });
+
+  it('the setup asks Gemini to answer quickly after the caller stops (short pause)', async () => {
+    const h = harness(OPEN);
+    await h.s.start('MZ1', ids);
+    h.gem().onOpen();
+    const setup = h.sentToGemini[0].setup;
+    assert.equal(setup.realtimeInputConfig.automaticActivityDetection.silenceDurationMs, 300);
+  });
+
+  it('after 20 seconds of silence from the caller, the AI thanks them and asks them to call again to book (once)', async () => {
+    const clock = { t: Date.parse('2026-10-22T15:00:00Z') };
+    const h = harness(OPEN, () => [], clock);
+    await h.s.start('MZ1', ids);
+    h.gem().onOpen();
+    await h.gem().onMessage(JSON.stringify({ setupComplete: {} }));
+    await h.gem().onMessage(JSON.stringify({ serverContent: { turnComplete: true } }));
+    const silent = Buffer.alloc(160, 0xff).toString('base64'); // mu-law silence
+    const loud = Buffer.alloc(160, 0x00).toString('base64'); // mu-law at full volume
+    clock.t += 5000; h.s.fromCaller(loud); // the caller speaks: the clock restarts
+    clock.t += 19000; h.s.fromCaller(silent);
+    assert.equal(h.sentToGemini.filter((m) => m.clientContent).length, 1, 'no nudge yet, 19 seconds of silence');
+    clock.t += 2000; h.s.fromCaller(silent);
+    clock.t += 3000; h.s.fromCaller(silent);
+    const nudges = h.sentToGemini.filter((m) => m.clientContent);
+    assert.equal(nudges.length, 2, 'the opening, then one nudge');
+    assert.match(nudges[1].clientContent.turns[0].parts[0].text, /20 seconds.*call again.*end_call/s);
   });
 });
