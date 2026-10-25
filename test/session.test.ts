@@ -13,20 +13,21 @@ function harness(startAnswer: any, toolAnswer: (list: any[]) => any[] = () => []
   const timers: { ms: number; fn: () => void }[] = [];
   const logs: [string, any][] = [];
   let gem: any;
+  const sockets: any[] = [];
   const deps: SessionDeps = {
     core: {
       start: async (c: any) => { core.push(['start', c]); return startAnswer; },
       tools: async (c: any, list: any[]) => { core.push(['tools', list]); return toolAnswer(list); },
       end: async (c: any, x: any) => { core.push(['end', x]); return {}; },
     } as any,
-    openGemini: (h) => { gem = h; return { send: (d) => sentToGemini.push(JSON.parse(d)), close: () => {} }; },
+    openGemini: (h) => { gem = h; sockets.push(h); return { send: (d) => sentToGemini.push(JSON.parse(d)), close: () => {} }; },
     updateCall: async (_sid, twiml) => { updates.push(twiml); return { ok: true }; },
     prompt: 'You answer for {{shop_name}}.', model: 'live-model', voice: 'Kore',
     setTimer: (ms, fn) => { timers.push({ ms, fn }); return timers.length; }, clearTimer: () => {},
     now: () => new Date(clock.t), log: (event, data) => logs.push([event, data]),
   };
   const s = new CallSession(deps, { send: (d) => sentToTwilio.push(JSON.parse(d)), close: () => {} });
-  return { s, sentToGemini, sentToTwilio, core, updates, timers, logs, gem: () => gem };
+  return { s, sentToGemini, sentToTwilio, core, updates, timers, logs, sockets, gem: () => gem };
 }
 const ids = { callSid: 'CA' + '1'.repeat(32), to: '+14013295007', from: '+12013702511' };
 const OPEN = { assistantId: 'x', assistantOverrides: { firstMessage: 'با Test Salon تماس گرفته‌اید. من دستیار هوش مصنوعی هستم و این تماس ممکن است ضبط شود.', maxDurationSeconds: 120, variableValues: { shop_name: 'Test Salon' } } };
@@ -163,5 +164,31 @@ describe('a call', () => {
     hangUpTimer!.fn();
     await new Promise((r) => setImmediate(r));
     assert.equal(h.updates.length, 1, 'the line is hung up once');
+  });
+
+  it('Gemini refuses the session at start (1007): the same session is opened once more, the opening is said again, the call is not dropped', async () => {
+    const h = harness(OPEN);
+    await h.s.start('MZ1', ids);
+    h.gem().onOpen();
+    await h.gem().onMessage(JSON.stringify({ setupComplete: {} }));
+    h.sockets[0].onClose(1007);
+    assert.equal(h.sockets.length, 2, 'a second session is opened');
+    assert.equal(h.updates.length, 0, 'the line stays open');
+    h.sockets[1].onOpen();
+    await h.sockets[1].onMessage(JSON.stringify({ setupComplete: {} }));
+    const openings = h.sentToGemini.filter((m) => m.clientContent);
+    assert.equal(openings.length, 2, 'the opening is said again on the new session');
+  });
+
+  it('a second 1007 in the same call is not retried again: the call ends as before', async () => {
+    const h = harness(OPEN);
+    await h.s.start('MZ1', ids);
+    h.gem().onOpen();
+    await h.gem().onMessage(JSON.stringify({ setupComplete: {} }));
+    h.sockets[0].onClose(1007);
+    h.sockets[1].onClose(1007);
+    await new Promise((r) => setImmediate(r));
+    assert.equal(h.sockets.length, 2, 'no third session');
+    assert.equal(h.updates.length, 1, 'the line is hung up');
   });
 });
