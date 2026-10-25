@@ -148,4 +148,20 @@ describe('a call', () => {
     assert.match(nudges[1].clientContent.turns[0].parts[0].text, /30 seconds.*call again.*end_call/s);
     assert.deepEqual(h.logs.find(([e]) => e === 'silence_nudge'), ['silence_nudge', { silentSeconds: 31 }]);
   });
+
+  it('after end_call the line stays open until the goodbye is fully said (not cut mid-sentence)', async () => {
+    const h = harness(OPEN);
+    await h.s.start('MZ1', ids);
+    h.gem().onOpen();
+    await h.gem().onMessage(JSON.stringify({ toolCall: { functionCalls: [{ id: 'f1', name: 'end_call' }] } }));
+    await new Promise((r) => setImmediate(r));
+    const before = h.timers.length;
+    await h.gem().onMessage(JSON.stringify({ serverContent: { turnComplete: true } }));
+    await new Promise((r) => setImmediate(r));
+    const hangUpTimer = h.timers.slice(before).find((t) => t.ms === 1500);
+    assert.ok(hangUpTimer, 'hang up 1.5 s after the goodbye turn completes');
+    hangUpTimer!.fn();
+    await new Promise((r) => setImmediate(r));
+    assert.equal(h.updates.length, 1, 'the line is hung up once');
+  });
 });

@@ -24,7 +24,8 @@ export type SessionDeps = {
 };
 
 const TRANSFER_DELAY_MS = 4000; // the AI says "connecting you now" first
-const HANGUP_DELAY_MS = 3000;
+const HANGUP_DELAY_MS = 1500; // after the goodbye is fully said
+const GOODBYE_MAX_MS = 15000; // safety: hang up even if the goodbye never completes
 const SILENCE_NUDGE_MS = 30000; // the caller says nothing this long: the AI thanks them and ends the call (fewer paid seconds)
 const SPEECH_PEAK = 1500; // of 32767: louder than the line's background noise
 const SILENCE_NUDGE = 'The caller has been silent for about 30 seconds. Thank them for calling, say they are welcome to call again to book their appointment, then call end_call. Say it in the caller\'s last language.';
@@ -41,6 +42,7 @@ export class CallSession {
   private opening = '';
   private lastSpeechAt = 0;
   private nudged = false;
+  private hangUpWhenSaid = false;
 
   private deps: SessionDeps;
   private twilio: SocketLike;
@@ -118,7 +120,10 @@ export class CallSession {
       if (part?.inlineData?.data) this.twilio.send(JSON.stringify({ event: 'media', streamSid: this.streamSid, media: { payload: geminiToPhone(part.inlineData.data, part.inlineData.mimeType) } }));
     }
     // the caller spoke over the AI: drop what Twilio still has queued
-    if (m.serverContent?.turnComplete) this.lastSpeechAt = this.deps.now().getTime(); // the AI finished: the silence starts now
+    if (m.serverContent?.turnComplete) {
+      this.lastSpeechAt = this.deps.now().getTime(); // the AI finished: the silence starts now
+      if (this.hangUpWhenSaid) this.timers.push(this.deps.setTimer(HANGUP_DELAY_MS, () => void this.hangUp()));
+    }
     if (m.serverContent?.interrupted) this.twilio.send(JSON.stringify({ event: 'clear', streamSid: this.streamSid }));
     if (m.toolCall?.functionCalls?.length) await this.runTools(m.toolCall.functionCalls);
   }
@@ -138,7 +143,9 @@ export class CallSession {
       if (c.name === 'end_call') {
         responses.push({ id: c.id, name: c.name, response: { ok: true } });
         this.endedReason = 'assistant-ended-call';
-        this.timers.push(this.deps.setTimer(HANGUP_DELAY_MS, () => void this.hangUp()));
+        // the goodbye is still being spoken: hang up only after it completes (see fromGemini)
+        this.hangUpWhenSaid = true;
+        this.timers.push(this.deps.setTimer(GOODBYE_MAX_MS, () => void this.hangUp()));
         continue;
       }
       if (!CORE_TOOL_NAMES.has(c.name)) { responses.push({ id: c.id, name: c.name, response: { ok: false, reason: 'unknown_tool' } }); continue; }
