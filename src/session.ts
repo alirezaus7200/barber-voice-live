@@ -2,7 +2,7 @@
 // for everything about the salon. Gemini hears and speaks every language itself, so the caller may
 // switch language at any time. The salon, the caller and the call id come from Twilio (signed), never
 // from what anyone says. Timers and sockets are passed in, so the whole flow runs in tests.
-import { geminiToPhone, phoneToGemini } from './audio.ts';
+import { geminiToPhone, mulawToPcm16, phoneToGemini } from './audio.ts';
 import { fillPrompt, type CallIds, type CoreClient } from './core.ts';
 import { CORE_TOOL_NAMES, geminiTools } from './tools.ts';
 import { dialTwiml, hangupTwiml, sayTwiml } from './twilio.ts';
@@ -25,6 +25,9 @@ export type SessionDeps = {
 
 const TRANSFER_DELAY_MS = 4000; // the AI says "connecting you now" first
 const HANGUP_DELAY_MS = 3000;
+const SILENCE_NUDGE_MS = 20000; // the caller says nothing this long: the AI thanks them and ends the call
+const SPEECH_PEAK = 1500; // of 32767: louder than the line's background noise
+const SILENCE_NUDGE = 'The caller has been silent for about 20 seconds. Thank them for calling, say they are welcome to call again to book their appointment, then call end_call. Say it in the caller\'s last language.';
 
 export class CallSession {
   private gemini: SocketLike | null = null;
@@ -36,6 +39,8 @@ export class CallSession {
   private timers: unknown[] = [];
   private closed = false;
   private opening = '';
+  private lastSpeechAt = 0;
+  private nudged = false;
 
   private deps: SessionDeps;
   private twilio: SocketLike;
@@ -68,6 +73,8 @@ export class CallSession {
         setup: {
           model: `models/${this.deps.model}`,
           generationConfig: { responseModalities: ['AUDIO'], speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: this.deps.voice } } } },
+          // answer as soon as the caller pauses (the default waits longer): fewer dead seconds on the line
+          realtimeInputConfig: { automaticActivityDetection: { silenceDurationMs: 300 } },
           systemInstruction: { parts: [{ text: fillPrompt(this.deps.prompt, o.variableValues ?? {}) }] },
           tools: geminiTools(),
         },
@@ -80,6 +87,13 @@ export class CallSession {
   /** Twilio "media": the caller's audio. */
   fromCaller(payloadB64: string) {
     if (this.ready && this.gemini) {
+      const now = this.deps.now().getTime();
+      const pcm = mulawToPcm16(Buffer.from(payloadB64, 'base64'));
+      if (peakOf(pcm) > SPEECH_PEAK) this.lastSpeechAt = now;
+      else if (!this.nudged && now - this.lastSpeechAt > SILENCE_NUDGE_MS) {
+        this.nudged = true;
+        this.gemini.send(JSON.stringify({ clientContent: { turns: [{ role: 'user', parts: [{ text: SILENCE_NUDGE }] }], turnComplete: true } }));
+      }
       this.gemini.send(JSON.stringify({ realtimeInput: { audio: { data: phoneToGemini(payloadB64), mimeType: 'audio/pcm;rate=16000' } } }));
     }
   }
@@ -91,6 +105,7 @@ export class CallSession {
     if (m.goAway) this.deps.log('gemini_go_away', { timeLeft: String(m.goAway.timeLeft ?? '') });
     if (m.setupComplete) {
       this.ready = true;
+      this.lastSpeechAt = this.deps.now().getTime();
       // the AI disclosure and the recording notice come first, word for word (barber-core's opening)
       this.gemini?.send(JSON.stringify({ clientContent: {
         turns: [{ role: 'user', parts: [{ text: `The call has started. Say exactly this, then wait for the caller: "${this.opening}"` }] }],
@@ -101,6 +116,7 @@ export class CallSession {
       if (part?.inlineData?.data) this.twilio.send(JSON.stringify({ event: 'media', streamSid: this.streamSid, media: { payload: geminiToPhone(part.inlineData.data, part.inlineData.mimeType) } }));
     }
     // the caller spoke over the AI: drop what Twilio still has queued
+    if (m.serverContent?.turnComplete) this.lastSpeechAt = this.deps.now().getTime(); // the AI finished: the silence starts now
     if (m.serverContent?.interrupted) this.twilio.send(JSON.stringify({ event: 'clear', streamSid: this.streamSid }));
     if (m.toolCall?.functionCalls?.length) await this.runTools(m.toolCall.functionCalls);
   }
@@ -164,4 +180,11 @@ export class CallSession {
       this.deps.log('core_end_failed', { call: this.ids.callSid, error: String(e?.message ?? e) });
     }
   }
+}
+
+/** The loudest sample of 16-bit PCM audio (0 for silence). */
+function peakOf(pcm: Buffer): number {
+  let peak = 0;
+  for (let i = 0; i + 1 < pcm.length; i += 2) peak = Math.max(peak, Math.abs(pcm.readInt16LE(i)));
+  return peak;
 }
