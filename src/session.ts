@@ -25,9 +25,9 @@ export type SessionDeps = {
 
 const TRANSFER_DELAY_MS = 4000; // the AI says "connecting you now" first
 const HANGUP_DELAY_MS = 3000;
-const SILENCE_NUDGE_MS = 20000; // the caller says nothing this long: the AI thanks them and ends the call
+const SILENCE_NUDGE_MS = 30000; // the caller says nothing this long: the AI thanks them and ends the call (fewer paid seconds)
 const SPEECH_PEAK = 1500; // of 32767: louder than the line's background noise
-const SILENCE_NUDGE = 'The caller has been silent for about 20 seconds. Thank them for calling, say they are welcome to call again to book their appointment, then call end_call. Say it in the caller\'s last language.';
+const SILENCE_NUDGE = 'The caller has been silent for about 30 seconds. Thank them for calling, say they are welcome to call again to book their appointment, then call end_call. Say it in the caller\'s last language.';
 
 export class CallSession {
   private gemini: SocketLike | null = null;
@@ -73,8 +73,8 @@ export class CallSession {
         setup: {
           model: `models/${this.deps.model}`,
           generationConfig: { responseModalities: ['AUDIO'], speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: this.deps.voice } } } },
-          // answer as soon as the caller pauses (the default waits longer): fewer dead seconds on the line
-          realtimeInputConfig: { automaticActivityDetection: { silenceDurationMs: 300 } },
+          // a short pause before the AI answers, but line noise or the AI's own voice must not interrupt it
+          realtimeInputConfig: { automaticActivityDetection: { startOfSpeechSensitivity: 'START_SENSITIVITY_LOW', silenceDurationMs: 600 } },
           systemInstruction: { parts: [{ text: fillPrompt(this.deps.prompt, o.variableValues ?? {}) }] },
           tools: geminiTools(),
         },
@@ -92,6 +92,7 @@ export class CallSession {
       if (peakOf(pcm) > SPEECH_PEAK) this.lastSpeechAt = now;
       else if (!this.nudged && now - this.lastSpeechAt > SILENCE_NUDGE_MS) {
         this.nudged = true;
+        this.deps.log('silence_nudge', { silentSeconds: Math.round((now - this.lastSpeechAt) / 1000) });
         this.gemini.send(JSON.stringify({ clientContent: { turns: [{ role: 'user', parts: [{ text: SILENCE_NUDGE }] }], turnComplete: true } }));
       }
       this.gemini.send(JSON.stringify({ realtimeInput: { audio: { data: phoneToGemini(payloadB64), mimeType: 'audio/pcm;rate=16000' } } }));
@@ -171,6 +172,7 @@ export class CallSession {
   async finish() {
     if (this.closed) return;
     this.closed = true;
+    this.deps.log('call_ended', { reason: this.endedReason });
     for (const t of this.timers) this.deps.clearTimer(t);
     this.gemini?.close();
     if (!this.ids.callSid) return;
