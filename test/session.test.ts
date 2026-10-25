@@ -191,4 +191,18 @@ describe('a call', () => {
     assert.equal(h.sockets.length, 2, 'no third session');
     assert.equal(h.updates.length, 1, 'the line is hung up');
   });
+
+  it('when Gemini refuses the full setting (1007), the retry uses the plain setting (no activity or compression options)', async () => {
+    const h = harness(OPEN);
+    await h.s.start('MZ1', ids);
+    h.gem().onOpen();
+    const full = h.sentToGemini[0].setup;
+    assert.ok(full.realtimeInputConfig && full.contextWindowCompression, 'the first try carries the full setting');
+    h.sockets[0].onClose(1007);
+    h.sockets[1].onOpen();
+    const plain = h.sentToGemini[1].setup;
+    assert.equal(plain.realtimeInputConfig, undefined, 'the retry has no activity options');
+    assert.equal(plain.contextWindowCompression, undefined, 'the retry has no compression');
+    assert.ok(plain.tools && plain.systemInstruction, 'the retry keeps the tools and the prompt');
+  });
 });
