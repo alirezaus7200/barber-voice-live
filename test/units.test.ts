@@ -109,4 +109,10 @@ describe('the booking steps in the prompt', () => {
     assert.ok(prompt.includes('Do you want the same as last time'));
     assert.ok(prompt.includes('Never guess a name, a time, a barber or a service.'));
   });
+  it('no time is offered before check_availability was called in this call', async () => {
+    const { readFileSync } = await import('node:fs');
+    const prompt = readFileSync(new URL('../src/prompt.txt', import.meta.url), 'utf8');
+    assert.ok(prompt.includes('Before you say ANY time, day or barber availability, call check_availability'));
+    assert.ok(prompt.includes('Never offer a time\n   from memory'));
+  });
 });
