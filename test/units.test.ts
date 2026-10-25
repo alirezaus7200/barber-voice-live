@@ -102,4 +102,11 @@ describe('the booking steps in the prompt', () => {
     assert.ok(name > 0 && readBack > name, 'the name is asked before the read-back');
     assert.ok(prompt.includes('Never end the call before book_appointment has answered ok'));
   });
+  it('the known caller is greeted by first name and offered the last barber and services, once; noise is never guessed', async () => {
+    const { readFileSync } = await import('node:fs');
+    const prompt = readFileSync(new URL('../src/prompt.txt', import.meta.url), 'utf8');
+    assert.ok(prompt.includes('{{known_caller}}'));
+    assert.ok(prompt.includes('Do you want the same as last time'));
+    assert.ok(prompt.includes('Never guess a name, a time, a barber or a service.'));
+  });
 });
