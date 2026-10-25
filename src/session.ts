@@ -43,6 +43,8 @@ export class CallSession {
   private lastSpeechAt = 0;
   private nudged = false;
   private hangUpWhenSaid = false;
+  private outcome = false; // a booking, a message or a transfer happened in this call
+  private refusedEnd = false; // the first early end_call is refused once, so the AI asks again
   private variables: Record<string, unknown> = {};
   private retried = false;
 
@@ -160,6 +162,13 @@ export class CallSession {
     }
     for (const c of calls) {
       if (c.name === 'end_call') {
+        // the call is not finished yet (nothing booked, no message, no transfer): ask the AI to continue, once
+        if (!this.outcome && !this.refusedEnd) {
+          this.refusedEnd = true;
+          this.deps.log('end_call_refused', {});
+          responses.push({ id: c.id, name: c.name, response: { ok: false, reason: 'not_finished', hint: 'Ask whether the caller wants to book or leave a message before you end the call.' } });
+          continue;
+        }
         responses.push({ id: c.id, name: c.name, response: { ok: true } });
         this.endedReason = 'assistant-ended-call';
         // the goodbye is still being spoken: hang up only after it completes (see fromGemini)
@@ -172,6 +181,7 @@ export class CallSession {
       let result: any = { ok: false, reason: 'system_error' };
       try { if (raw) result = JSON.parse(raw); } catch { /* keep system_error */ }
       this.deps.log('tool_result', { tool: c.name, ok: result?.ok === true });
+      if (result?.ok === true && ['book_appointment', 'take_message', 'transfer_to_human', 'cancel_appointment', 'reschedule_appointment'].includes(c.name)) this.outcome = true;
       responses.push({ id: c.id, name: c.name, response: result });
       // barber-core said a person can take the call now (only while the salon is open): move it there
       if (c.name === 'transfer_to_human' && result?.ok === true && typeof result.transfer_to === 'string') {
