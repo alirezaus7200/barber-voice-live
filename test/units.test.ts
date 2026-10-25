@@ -109,4 +109,10 @@ describe('the booking steps in the prompt', () => {
     assert.ok(prompt.includes('Do you want the same as last time'));
     assert.ok(prompt.includes('Never guess a name, a time, a barber or a service.'));
   });
+  it('the goodbye and the end_call go together: the line is closed as soon as the goodbye is said', async () => {
+    const { readFileSync } = await import('node:fs');
+    const prompt = readFileSync(new URL('../src/prompt.txt', import.meta.url), 'utf8');
+    assert.ok(prompt.includes('call end_call in the same turn'));
+    assert.ok(prompt.includes('Never say goodbye without calling end_call'));
+  });
 });
