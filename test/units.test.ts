@@ -92,3 +92,14 @@ describe('tools and settings', () => {
     assert.throws(() => loadConfig({ ...ok, STREAM_SECRET: 'short' }), /32/);
   });
 });
+
+describe('the booking steps in the prompt', () => {
+  it('get the caller name before the read-back, and never end the call before book_appointment answers', async () => {
+    const { readFileSync } = await import('node:fs');
+    const prompt = readFileSync(new URL('../src/prompt.txt', import.meta.url), 'utf8');
+    const name = prompt.indexOf("first get the caller's name");
+    const readBack = prompt.indexOf('Then read it back');
+    assert.ok(name > 0 && readBack > name, 'the name is asked before the read-back');
+    assert.ok(prompt.includes('Never end the call before book_appointment has answered ok'));
+  });
+});
