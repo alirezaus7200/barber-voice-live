@@ -118,16 +118,14 @@ describe('a call', () => {
     assert.doesNotMatch(JSON.stringify(h.logs), /Dana|2026-10-23/);
   });
 
-  it('the setup: a short pause, but no interruption by line noise or the AI\'s own voice', async () => {
+  it('the default setup is the plain one (the full one with activity and compression options is refused with 1007)', async () => {
     const h = harness(OPEN);
     await h.s.start('MZ1', ids);
     h.gem().onOpen();
     const setup = h.sentToGemini[0].setup;
-    assert.equal(setup.realtimeInputConfig.automaticActivityDetection.silenceDurationMs, 600);
-    // a long call is not cut at the 15-minute audio limit: the older part of the conversation is compressed
-    assert.deepEqual(setup.contextWindowCompression, { slidingWindow: {} });
-    // the caller's speech on a phone line is quiet: the model must hear it (default sensitivity, not LOW)
-    assert.equal(setup.realtimeInputConfig.automaticActivityDetection.startOfSpeechSensitivity, undefined);
+    assert.equal(setup.realtimeInputConfig, undefined);
+    assert.equal(setup.contextWindowCompression, undefined);
+    assert.ok(setup.systemInstruction && setup.tools, 'the prompt and the tools are kept');
   });
 
   it('after 30 seconds of silence from the caller, the AI thanks them and asks them to call again to book (once)', async () => {
@@ -197,7 +195,7 @@ describe('a call', () => {
     await h.s.start('MZ1', ids);
     h.gem().onOpen();
     const full = h.sentToGemini[0].setup;
-    assert.ok(full.realtimeInputConfig && full.contextWindowCompression, 'the first try carries the full setting');
+    assert.equal(full.realtimeInputConfig, undefined, 'the first try is the plain setting');
     h.sockets[0].onClose(1007);
     h.sockets[1].onOpen();
     const plain = h.sentToGemini[1].setup;

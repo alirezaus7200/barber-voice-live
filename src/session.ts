@@ -73,18 +73,19 @@ export class CallSession {
     const max = Number(o.maxDurationSeconds) > 0 ? Number(o.maxDurationSeconds) : 600;
     this.timers.push(this.deps.setTimer(max * 1000, () => { this.endedReason = 'exceeded-max-duration'; void this.hangUp(); }));
     this.variables = o.variableValues ?? {};
-    this.connectGemini();
+    this.connectGemini(true);
   }
 
   /** One Gemini Live session for this call. If Gemini refuses it at once (1007), it is opened once more. */
-  private connectGemini(plain = false) {
+  private connectGemini(plain: boolean) {
     this.gemini = this.deps.openGemini({
       onOpen: () => this.gemini?.send(JSON.stringify({
         setup: {
           model: `models/${this.deps.model}`,
           generationConfig: { responseModalities: ['AUDIO'], speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: this.deps.voice } } } },
           // a short pause before the AI answers; default sensitivity so a quiet caller is heard
-          // the plain setting is the retry after Gemini refused the full one (1007)
+          // the plain setting is the default: Gemini refused the full one (activity and compression options) with 1007
+          // in production, so the full one is kept only for a later test with the platform's answer
           ...(plain ? {} : { realtimeInputConfig: { automaticActivityDetection: { silenceDurationMs: 600 } }, contextWindowCompression: { slidingWindow: {} } }),
           systemInstruction: { parts: [{ text: fillPrompt(this.deps.prompt, this.variables) }] },
           tools: geminiTools(),
