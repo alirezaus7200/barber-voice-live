@@ -117,12 +117,14 @@ describe('a call', () => {
     assert.doesNotMatch(JSON.stringify(h.logs), /Dana|2026-10-23/);
   });
 
-  it('the setup asks Gemini to answer quickly after the caller stops (short pause)', async () => {
+  it('the setup: a short pause, but no interruption by line noise or the AI\'s own voice', async () => {
     const h = harness(OPEN);
     await h.s.start('MZ1', ids);
     h.gem().onOpen();
     const setup = h.sentToGemini[0].setup;
-    assert.equal(setup.realtimeInputConfig.automaticActivityDetection.silenceDurationMs, 300);
+    assert.equal(setup.realtimeInputConfig.automaticActivityDetection.silenceDurationMs, 600);
+    // a line noise or the AI's own echo must not count as the caller speaking (that cut the opening short)
+    assert.equal(setup.realtimeInputConfig.automaticActivityDetection.startOfSpeechSensitivity, 'START_SENSITIVITY_LOW');
   });
 
   it('after 30 seconds of silence from the caller, the AI thanks them and asks them to call again to book (once)', async () => {

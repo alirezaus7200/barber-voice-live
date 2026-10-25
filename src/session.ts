@@ -73,8 +73,8 @@ export class CallSession {
         setup: {
           model: `models/${this.deps.model}`,
           generationConfig: { responseModalities: ['AUDIO'], speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: this.deps.voice } } } },
-          // answer as soon as the caller pauses (the default waits longer): fewer dead seconds on the line
-          realtimeInputConfig: { automaticActivityDetection: { silenceDurationMs: 300 } },
+          // a short pause before the AI answers, but line noise or the AI's own voice must not interrupt it
+          realtimeInputConfig: { automaticActivityDetection: { startOfSpeechSensitivity: 'START_SENSITIVITY_LOW', silenceDurationMs: 600 } },
           systemInstruction: { parts: [{ text: fillPrompt(this.deps.prompt, o.variableValues ?? {}) }] },
           tools: geminiTools(),
         },
