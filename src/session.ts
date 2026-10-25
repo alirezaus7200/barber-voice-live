@@ -77,15 +77,15 @@ export class CallSession {
   }
 
   /** One Gemini Live session for this call. If Gemini refuses it at once (1007), it is opened once more. */
-  private connectGemini() {
+  private connectGemini(plain = false) {
     this.gemini = this.deps.openGemini({
       onOpen: () => this.gemini?.send(JSON.stringify({
         setup: {
           model: `models/${this.deps.model}`,
           generationConfig: { responseModalities: ['AUDIO'], speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: this.deps.voice } } } },
           // a short pause before the AI answers; default sensitivity so a quiet caller is heard
-          realtimeInputConfig: { automaticActivityDetection: { silenceDurationMs: 600 } },
-          contextWindowCompression: { slidingWindow: {} },
+          // the plain setting is the retry after Gemini refused the full one (1007)
+          ...(plain ? {} : { realtimeInputConfig: { automaticActivityDetection: { silenceDurationMs: 600 } }, contextWindowCompression: { slidingWindow: {} } }),
           systemInstruction: { parts: [{ text: fillPrompt(this.deps.prompt, this.variables) }] },
           tools: geminiTools(),
         },
@@ -97,7 +97,7 @@ export class CallSession {
           this.retried = true;
           this.ready = false;
           this.deps.log('gemini_retry', { reason: 'refused at start' });
-          this.connectGemini();
+          this.connectGemini(true);
           return;
         }
         this.endedReason = 'gemini-closed';
