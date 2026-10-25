@@ -115,4 +115,10 @@ describe('the booking steps in the prompt', () => {
     assert.ok(prompt.includes('Before you say ANY time, day or barber availability, call check_availability'));
     assert.ok(prompt.includes('Never offer a time\n   from memory'));
   });
+  it('a booking that does not work out: the AI offers to connect the caller to the barber', async () => {
+    const { readFileSync } = await import('node:fs');
+    const prompt = readFileSync(new URL('../src/prompt.txt', import.meta.url), 'utf8');
+    assert.ok(prompt.includes('Would you like\n   me to connect you to <barber>?'));
+    assert.ok(prompt.includes("call transfer_to_human with that\n   barber's staff_id"));
+  });
 });
