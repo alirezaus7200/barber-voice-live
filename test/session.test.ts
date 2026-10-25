@@ -96,9 +96,14 @@ describe('a call', () => {
     const h = harness(OPEN, () => { throw new Error('down'); });
     await h.s.start('MZ1', ids);
     h.gem().onOpen();
-    await h.gem().onMessage(JSON.stringify({ toolCall: { functionCalls: [{ id: 'f1', name: 'book_appointment', args: {} }, { id: 'f2', name: 'end_call' }] } }));
+    await h.gem().onMessage(JSON.stringify({ toolCall: { functionCalls: [{ id: 'f1', name: 'book_appointment', args: {} }] } }));
     await new Promise((r) => setImmediate(r));
     assert.deepEqual(h.sentToGemini.at(-1).toolResponse.functionResponses[0].response, { ok: false, reason: 'system_error' });
+    // a failed booking is not an outcome: the first end_call is refused once, then accepted
+    await h.gem().onMessage(JSON.stringify({ toolCall: { functionCalls: [{ id: 'f2', name: 'end_call' }] } }));
+    await new Promise((r) => setImmediate(r));
+    await h.gem().onMessage(JSON.stringify({ toolCall: { functionCalls: [{ id: 'f3', name: 'end_call' }] } }));
+    await new Promise((r) => setImmediate(r));
     h.timers.at(-1)!.fn();
     await new Promise((r) => setImmediate(r));
     await h.s.finish();
@@ -156,6 +161,8 @@ describe('a call', () => {
     h.gem().onOpen();
     await h.gem().onMessage(JSON.stringify({ toolCall: { functionCalls: [{ id: 'f1', name: 'end_call' }] } }));
     await new Promise((r) => setImmediate(r));
+    await h.gem().onMessage(JSON.stringify({ toolCall: { functionCalls: [{ id: 'f1b', name: 'end_call' }] } })); // the second one is accepted
+    await new Promise((r) => setImmediate(r));
     const before = h.timers.length;
     await h.gem().onMessage(JSON.stringify({ serverContent: { turnComplete: true } }));
     await new Promise((r) => setImmediate(r));
@@ -204,5 +211,29 @@ describe('a call', () => {
     assert.equal(plain.realtimeInputConfig, undefined, 'the retry has no activity options');
     assert.equal(plain.contextWindowCompression, undefined, 'the retry has no compression');
     assert.ok(plain.tools && plain.systemInstruction, 'the retry keeps the tools and the prompt');
+  });
+
+  it('an early end_call (nothing booked, no message) is refused once; after a booking it ends the call', async () => {
+    const h = harness(OPEN, (list) => list.map((t) => ({ toolCallId: t.id, name: t.name, result: t.name === 'book_appointment' ? '{"ok":true}' : '{"ok":true}' })));
+    await h.s.start('MZ1', ids);
+    h.gem().onOpen();
+    await h.gem().onMessage(JSON.stringify({ toolCall: { functionCalls: [{ id: 'e1', name: 'end_call' }] } }));
+    await new Promise((r) => setImmediate(r));
+    assert.equal(h.sentToGemini.at(-1).toolResponse.functionResponses[0].response.ok, false, 'refused the first time');
+    assert.equal(h.timers.filter((t) => t.ms === 15000).length, 0, 'no hang-up scheduled');
+    await h.gem().onMessage(JSON.stringify({ toolCall: { functionCalls: [{ id: 'e2', name: 'end_call' }] } }));
+    await new Promise((r) => setImmediate(r));
+    assert.equal(h.sentToGemini.at(-1).toolResponse.functionResponses[0].response.ok, true, 'allowed the second time');
+  });
+
+  it('after a booking, end_call ends the call at once', async () => {
+    const h = harness(OPEN, (list) => list.map((t) => ({ toolCallId: t.id, name: t.name, result: '{"ok":true,"appointment_summary":"x"}' })));
+    await h.s.start('MZ1', ids);
+    h.gem().onOpen();
+    await h.gem().onMessage(JSON.stringify({ toolCall: { functionCalls: [{ id: 'b1', name: 'book_appointment', args: {} }] } }));
+    await new Promise((r) => setImmediate(r));
+    await h.gem().onMessage(JSON.stringify({ toolCall: { functionCalls: [{ id: 'e1', name: 'end_call' }] } }));
+    await new Promise((r) => setImmediate(r));
+    assert.equal(h.sentToGemini.at(-1).toolResponse.functionResponses.at(-1).response.ok, true);
   });
 });
