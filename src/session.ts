@@ -11,7 +11,7 @@ export type SocketLike = { send(data: string): void; close(): void };
 export type SessionDeps = {
   core: CoreClient;
   /** Opens the Gemini Live socket; `onMessage` gets each server message as text. */
-  openGemini(handlers: { onOpen(): void; onMessage(text: string): void; onClose(): void }): SocketLike;
+  openGemini(handlers: { onOpen(): void; onMessage(text: string): void; onClose(code?: number): void }): SocketLike;
   /** Replaces what the live call does (Twilio REST): a transfer, a notice, a hang-up. */
   updateCall(callSid: string, twiml: string): Promise<{ ok: boolean; error?: string }>;
   prompt: string;
@@ -43,6 +43,8 @@ export class CallSession {
   private lastSpeechAt = 0;
   private nudged = false;
   private hangUpWhenSaid = false;
+  private variables: Record<string, unknown> = {};
+  private retried = false;
 
   private deps: SessionDeps;
   private twilio: SocketLike;
@@ -70,6 +72,12 @@ export class CallSession {
     this.opening = String(o.firstMessage ?? '');
     const max = Number(o.maxDurationSeconds) > 0 ? Number(o.maxDurationSeconds) : 600;
     this.timers.push(this.deps.setTimer(max * 1000, () => { this.endedReason = 'exceeded-max-duration'; void this.hangUp(); }));
+    this.variables = o.variableValues ?? {};
+    this.connectGemini();
+  }
+
+  /** One Gemini Live session for this call. If Gemini refuses it at once (1007), it is opened once more. */
+  private connectGemini() {
     this.gemini = this.deps.openGemini({
       onOpen: () => this.gemini?.send(JSON.stringify({
         setup: {
@@ -78,12 +86,23 @@ export class CallSession {
           // a short pause before the AI answers; default sensitivity so a quiet caller is heard
           realtimeInputConfig: { automaticActivityDetection: { silenceDurationMs: 600 } },
           contextWindowCompression: { slidingWindow: {} },
-          systemInstruction: { parts: [{ text: fillPrompt(this.deps.prompt, o.variableValues ?? {}) }] },
+          systemInstruction: { parts: [{ text: fillPrompt(this.deps.prompt, this.variables) }] },
           tools: geminiTools(),
         },
       })),
       onMessage: (text) => void this.fromGemini(text),
-      onClose: () => { if (!this.closed) { this.endedReason = 'gemini-closed'; void this.hangUp(); } },
+      onClose: (code) => {
+        if (this.closed) return;
+        if (code === 1007 && !this.retried) {
+          this.retried = true;
+          this.ready = false;
+          this.deps.log('gemini_retry', { reason: 'refused at start' });
+          this.connectGemini();
+          return;
+        }
+        this.endedReason = 'gemini-closed';
+        void this.hangUp();
+      },
     });
   }
 
