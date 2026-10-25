@@ -123,6 +123,8 @@ describe('a call', () => {
     h.gem().onOpen();
     const setup = h.sentToGemini[0].setup;
     assert.equal(setup.realtimeInputConfig.automaticActivityDetection.silenceDurationMs, 600);
+    // a long call is not cut at the 15-minute audio limit: the older part of the conversation is compressed
+    assert.deepEqual(setup.contextWindowCompression, { slidingWindow: {} });
     // a line noise or the AI's own echo must not count as the caller speaking (that cut the opening short)
     assert.equal(setup.realtimeInputConfig.automaticActivityDetection.startOfSpeechSensitivity, 'START_SENSITIVITY_LOW');
   });
