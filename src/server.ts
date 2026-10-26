@@ -77,7 +77,7 @@ wss.on('connection', (twilio) => {
     } else if (m.event === 'media' && typeof m.media?.payload === 'string') {
       session?.fromCaller(m.media.payload);
     } else if (m.event === 'mark') {
-      session?.played();
+      session?.played(typeof m.mark?.name === 'string' ? m.mark.name : undefined);
     } else if (m.event === 'stop') {
       await session?.finish();
     }

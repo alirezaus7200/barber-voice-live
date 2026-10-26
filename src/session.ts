@@ -32,6 +32,7 @@ const SILENCE_NUDGE_MS = 30000; // the caller says nothing this long: the AI tha
 const REASK_MS = 7000; // the AI asked and the caller says nothing this long: the AI asks again (callers do not wait in silence)
 const REASK = 'The caller has not answered for about 7 seconds. Ask your last question again, shorter and clearly, in the caller\'s language. If it was about a booking, keep going with the booking.';
 const REASK_OFFER = 'The caller still has not answered. If a booking is not finished, ask: shall I connect you to the barber, or take a message for the barber? (Offer to connect only if the salon is open now; otherwise offer only the message.) If the booking is done, ask if there is anything else. Then wait for the answer.';
+const OPENING_MAX_MS = 20000; // Twilio never confirmed the opening was played: the caller is heard anyway after this
 const SPEECH_PEAK = 1500; // of 32767: louder than the line's background noise
 const SILENCE_NUDGE = 'The caller has been silent for about 30 seconds. Thank them for calling, say they are welcome to call again to book their appointment, then call end_call. Say it in the caller\'s last language.';
 
@@ -56,6 +57,11 @@ export class CallSession {
   private retried = false;
   private t0 = 0; // when Twilio's start came (ms), for the start-up timings
   private firstAudio = false;
+  // The opening (AI disclosure, recording notice) is heard in full: until Twilio confirms it was played,
+  // the caller's audio is not passed on, so a "hello?" cannot cut it off.
+  private openingHeard = false;
+  private openingTries = 0;
+  private turnAudio = false; // the AI's current turn had audio
 
   private deps: SessionDeps;
   private twilio: SocketLike;
@@ -131,7 +137,7 @@ export class CallSession {
 
   /** Twilio "media": the caller's audio. */
   fromCaller(payloadB64: string) {
-    if (this.ready && this.gemini) {
+    if (this.ready && this.gemini && this.openingHeard) {
       const now = this.deps.now().getTime();
       const pcm = mulawToPcm16(Buffer.from(payloadB64, 'base64'));
       if (peakOf(pcm) > SPEECH_PEAK) {
@@ -152,13 +158,29 @@ export class CallSession {
     }
   }
 
+  /** The AI disclosure and the recording notice come first, word for word (barber-core's opening). */
+  private askOpening() {
+    this.openingTries += 1;
+    if (this.openingTries > 1) this.deps.log('opening_again', { tries: this.openingTries });
+    this.gemini?.send(JSON.stringify({ clientContent: {
+      turns: [{ role: 'user', parts: [{ text: `The call has started. Say exactly this, then wait for the caller: "${this.opening}"` }] }],
+      turnComplete: true,
+    } }));
+  }
+
   /** Start-up timing: how long after Twilio's start each step came (the caller hears nothing until first_audio). */
   private step(name: string) {
     this.deps.log('start_timing', { step: name, ms: this.deps.now().getTime() - this.t0, retried: this.retried });
   }
 
   /** Twilio "mark": what the AI said has been fully played to the caller; the wait for an answer starts now. */
-  played() {
+  played(name?: string) {
+    if (name === 'opening' && !this.openingHeard) {
+      this.openingHeard = true;
+      this.step('opening_heard');
+      this.aiWaitingSince = this.deps.now().getTime();
+      return;
+    }
     if (this.aiWaitingSince) this.aiWaitingSince = this.deps.now().getTime();
   }
 
@@ -171,19 +193,27 @@ export class CallSession {
       this.step('gemini_ready');
       this.ready = true;
       this.lastSpeechAt = this.deps.now().getTime();
-      // the AI disclosure and the recording notice come first, word for word (barber-core's opening)
-      this.gemini?.send(JSON.stringify({ clientContent: {
-        turns: [{ role: 'user', parts: [{ text: `The call has started. Say exactly this, then wait for the caller: "${this.opening}"` }] }],
-        turnComplete: true,
-      } }));
+      if (!this.openingHeard) this.askOpening();
     }
     for (const part of m.serverContent?.modelTurn?.parts ?? []) {
-      if (part?.inlineData?.data) this.aiWaitingSince = 0;
+      if (part?.inlineData?.data) { this.aiWaitingSince = 0; this.turnAudio = true; }
       if (part?.inlineData?.data && !this.firstAudio) { this.firstAudio = true; this.step('first_audio'); }
       if (part?.inlineData?.data) this.twilio.send(JSON.stringify({ event: 'media', streamSid: this.streamSid, media: { payload: geminiToPhone(part.inlineData.data, part.inlineData.mimeType) } }));
     }
-    // the caller spoke over the AI: drop what Twilio still has queued
+    if (m.serverContent?.turnComplete && !this.openingHeard && !this.hangUpWhenSaid) {
+      const said = this.turnAudio;
+      this.turnAudio = false;
+      if (!said && this.openingTries < 2) return this.askOpening(); // a turn with no audio: the opening again
+      this.twilio.send(JSON.stringify({ event: 'mark', streamSid: this.streamSid, mark: { name: 'opening' } }));
+      this.timers.push(this.deps.setTimer(OPENING_MAX_MS, () => {
+        if (this.openingHeard || this.closed) return;
+        this.deps.log('opening_mark_missing', {});
+        this.played('opening');
+      }));
+      return;
+    }
     if (m.serverContent?.turnComplete) {
+      this.turnAudio = false;
       this.lastSpeechAt = this.deps.now().getTime(); // the AI finished: the silence starts now
       if (!this.hangUpWhenSaid) {
         // Twilio sends the mark back once the audio is played; until then the turn's end counts
@@ -192,7 +222,8 @@ export class CallSession {
       }
       if (this.hangUpWhenSaid) this.timers.push(this.deps.setTimer(HANGUP_DELAY_MS, () => void this.hangUp()));
     }
-    if (m.serverContent?.interrupted) this.twilio.send(JSON.stringify({ event: 'clear', streamSid: this.streamSid }));
+    // the caller spoke over the AI: drop what Twilio still has queued (never the opening)
+    if (m.serverContent?.interrupted && this.openingHeard) this.twilio.send(JSON.stringify({ event: 'clear', streamSid: this.streamSid }));
     if (m.toolCall?.functionCalls?.length) this.aiWaitingSince = 0; // a tool runs: the caller is not being asked
     if (m.toolCall?.functionCalls?.length) await this.runTools(m.toolCall.functionCalls);
   }

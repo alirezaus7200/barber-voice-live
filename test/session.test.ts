@@ -29,6 +29,12 @@ function harness(startAnswer: any, toolAnswer: (list: any[]) => any[] = () => []
   const s = new CallSession(deps, { send: (d) => sentToTwilio.push(JSON.parse(d)), close: () => {} });
   return { s, sentToGemini, sentToTwilio, core, updates, timers, logs, sockets, gem: () => gem };
 }
+// the opening is said (audio) and Twilio confirms it was played: from now on the caller is heard
+async function heard(h: ReturnType<typeof harness>) {
+  await h.gem().onMessage(JSON.stringify({ serverContent: { modelTurn: { parts: [{ inlineData: { mimeType: 'audio/pcm;rate=24000', data: Buffer.alloc(480).toString('base64') } }] } } }));
+  await h.gem().onMessage(JSON.stringify({ serverContent: { turnComplete: true } }));
+  h.s.played('opening');
+}
 const ids = { callSid: 'CA' + '1'.repeat(32), to: '+14013295007', from: '+12013702511' };
 const OPEN = { assistantId: 'x', assistantOverrides: { firstMessage: 'با Test Salon تماس گرفته‌اید. من دستیار هوش مصنوعی هستم و این تماس ممکن است ضبط شود.', maxDurationSeconds: 120, variableValues: { shop_name: 'Test Salon' } } };
 
@@ -48,13 +54,38 @@ describe('a call', () => {
     assert.equal(h.sentToGemini.length, 1, 'no audio before Gemini is ready');
     h.gem().onMessage(JSON.stringify({ setupComplete: {} }));
     assert.match(h.sentToGemini[1].clientContent.turns[0].parts[0].text, /این تماس ممکن است ضبط شود/);
-    h.s.fromCaller(pcm16ToMulaw(Buffer.alloc(160)).toString('base64'));
-    assert.equal(h.sentToGemini[2].realtimeInput.audio.mimeType, 'audio/pcm;rate=16000');
     h.gem().onMessage(JSON.stringify({ serverContent: { modelTurn: { parts: [{ inlineData: { mimeType: 'audio/pcm;rate=24000', data: Buffer.alloc(480).toString('base64') } }] } } }));
     assert.equal(h.sentToTwilio[0].event, 'media');
     assert.equal(Buffer.from(h.sentToTwilio[0].media.payload, 'base64').length, 80);
+    // while the opening plays, the caller's "hello?" is not passed on and cannot cut it off
+    h.s.fromCaller(pcm16ToMulaw(Buffer.alloc(160, 0x7f)).toString('base64'));
     h.gem().onMessage(JSON.stringify({ serverContent: { interrupted: true } }));
-    assert.equal(h.sentToTwilio[1].event, 'clear');
+    assert.equal(h.sentToGemini.length, 2, 'no caller audio during the opening');
+    assert.equal(h.sentToTwilio.length, 1, 'the opening is not cleared');
+    h.gem().onMessage(JSON.stringify({ serverContent: { turnComplete: true } }));
+    assert.deepEqual(h.sentToTwilio[1], { event: 'mark', streamSid: 'MZ1', mark: { name: 'opening' } });
+    h.s.played('opening'); // Twilio: played in full
+    h.s.fromCaller(pcm16ToMulaw(Buffer.alloc(160)).toString('base64'));
+    assert.equal(h.sentToGemini[2].realtimeInput.audio.mimeType, 'audio/pcm;rate=16000');
+    h.gem().onMessage(JSON.stringify({ serverContent: { interrupted: true } }));
+    assert.equal(h.sentToTwilio.at(-1).event, 'clear');
+  });
+
+  it('an opening turn with no audio is asked again; if Twilio never confirms it, the caller is heard after 20 s', async () => {
+    const h = harness(OPEN);
+    await h.s.start('MZ1', ids);
+    h.gem().onOpen();
+    await h.gem().onMessage(JSON.stringify({ setupComplete: {} }));
+    await h.gem().onMessage(JSON.stringify({ serverContent: { turnComplete: true } })); // nothing was said
+    assert.equal(h.sentToGemini.filter((m) => m.clientContent).length, 2, 'the opening asked again');
+    assert.deepEqual(h.logs.find(([e]) => e === 'opening_again'), ['opening_again', { tries: 2 }]);
+    await heard({ ...h, s: { played: () => {} } as any }); // said, but no mark comes back
+    h.s.fromCaller(pcm16ToMulaw(Buffer.alloc(160)).toString('base64'));
+    assert.equal(h.sentToGemini.filter((m) => m.realtimeInput).length, 0);
+    h.timers.find((t) => t.ms === 20_000)!.fn();
+    h.s.fromCaller(pcm16ToMulaw(Buffer.alloc(160)).toString('base64'));
+    assert.equal(h.sentToGemini.filter((m) => m.realtimeInput).length, 1);
+    assert.ok(h.logs.some(([e]) => e === 'opening_mark_missing'));
   });
 
   it('tools go to barber-core and their results back to Gemini; a yes from transfer_to_human moves the call', async () => {
@@ -141,6 +172,7 @@ describe('a call', () => {
     await h.s.start('MZ1', ids);
     h.gem().onOpen();
     await h.gem().onMessage(JSON.stringify({ setupComplete: {} }));
+    await heard(h);
     await h.gem().onMessage(JSON.stringify({ serverContent: { turnComplete: true } }));
     const silent = Buffer.alloc(160, 0xff).toString('base64'); // mu-law silence
     const loud = Buffer.alloc(160, 0x00).toString('base64'); // mu-law at full volume
@@ -161,6 +193,7 @@ describe('a call', () => {
     await h.s.start('MZ1', ids);
     h.gem().onOpen();
     await h.gem().onMessage(JSON.stringify({ setupComplete: {} }));
+    await heard(h);
     const silent = Buffer.alloc(160, 0xff).toString('base64');
     const loud = Buffer.alloc(160, 0x00).toString('base64');
     const said = () => h.sentToGemini.filter((m) => m.clientContent).map((m) => m.clientContent.turns[0].parts[0].text);
@@ -207,6 +240,7 @@ describe('a call', () => {
     await h.s.start('MZ1', ids);
     h.gem().onOpen();
     await h.gem().onMessage(JSON.stringify({ setupComplete: {} }));
+    await heard(h);
     const silent = Buffer.alloc(160, 0xff).toString('base64');
     await h.gem().onMessage(JSON.stringify({ serverContent: { turnComplete: true } }));
     let release: () => void = () => {};
