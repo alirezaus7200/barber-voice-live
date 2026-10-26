@@ -30,6 +30,10 @@ function harness(startAnswer: any, toolAnswer: (list: any[]) => any[] = () => []
   return { s, sentToGemini, sentToTwilio, core, updates, timers, logs, sockets, gem: () => gem };
 }
 // the opening is said (audio) and Twilio confirms it was played: from now on the caller is heard
+// the AI has started the opening (audio): tools may run
+async function speak(h: ReturnType<typeof harness>) {
+  await h.gem().onMessage(JSON.stringify({ serverContent: { modelTurn: { parts: [{ inlineData: { mimeType: 'audio/pcm;rate=24000', data: Buffer.alloc(480).toString('base64') } }] } } }));
+}
 async function heard(h: ReturnType<typeof harness>) {
   await h.gem().onMessage(JSON.stringify({ serverContent: { modelTurn: { parts: [{ inlineData: { mimeType: 'audio/pcm;rate=24000', data: Buffer.alloc(480).toString('base64') } }] } } }));
   await h.gem().onMessage(JSON.stringify({ serverContent: { turnComplete: true } }));
@@ -93,6 +97,7 @@ describe('a call', () => {
       result: t.name === 'transfer_to_human' ? '{"ok":true,"transfer_to":"+14015550100"}' : '{"ok":true,"slots":[]}' })));
     await h.s.start('MZ1', ids);
     h.gem().onOpen();
+    await speak(h);
     await h.gem().onMessage(JSON.stringify({ toolCall: { functionCalls: [{ id: 'f1', name: 'check_availability', args: { date: '2026-10-23' } }, { id: 'f2', name: 'nope' }] } }));
     await new Promise((r) => setImmediate(r));
     assert.deepEqual(h.core[1], ['tools', [{ id: 'f1', name: 'check_availability', args: { date: '2026-10-23' } }]]);
@@ -127,6 +132,7 @@ describe('a call', () => {
     const h = harness(OPEN, () => { throw new Error('down'); });
     await h.s.start('MZ1', ids);
     h.gem().onOpen();
+    await speak(h);
     await h.gem().onMessage(JSON.stringify({ toolCall: { functionCalls: [{ id: 'f1', name: 'book_appointment', args: {} }] } }));
     await new Promise((r) => setImmediate(r));
     assert.deepEqual(h.sentToGemini.at(-1).toolResponse.functionResponses[0].response, { ok: false, reason: 'system_error' });
@@ -146,6 +152,7 @@ describe('a call', () => {
     const h = harness(OPEN, () => [{ toolCallId: 'f1', name: 'check_availability', result: '{"ok":true,"slots":["10:00"]}' }]);
     await h.s.start('MZ1', ids);
     h.gem().onOpen();
+    await speak(h);
     await h.gem().onMessage(JSON.stringify({ goAway: { timeLeft: '30s' } }));
     await h.gem().onMessage(JSON.stringify({ toolCall: { functionCalls: [{ id: 'f1', name: 'check_availability', args: { date: '2026-10-23', name: 'Dana' } }] } }));
     await new Promise((r) => setImmediate(r));
@@ -234,6 +241,22 @@ describe('a call', () => {
     ]);
   });
 
+  it('no tool runs before the AI starts the opening (the caller would wait in silence and miss the disclosure)', async () => {
+    const h = harness(OPEN);
+    await h.s.start('MZ1', ids);
+    h.gem().onOpen();
+    await h.gem().onMessage(JSON.stringify({ setupComplete: {} }));
+    await h.gem().onMessage(JSON.stringify({ toolCall: { functionCalls: [{ id: 'p1', name: 'previous_visit_reminder', args: {} }] } }));
+    assert.equal(h.core.filter(([k]) => k === 'tools').length, 0, 'barber-core is not asked');
+    const r = h.sentToGemini.at(-1).toolResponse.functionResponses[0];
+    assert.equal(r.response.reason, 'say_opening_first');
+    assert.match(r.response.hint, /این تماس ممکن است ضبط شود/);
+    assert.deepEqual(h.logs.find(([e]) => e === 'tool_before_opening'), ['tool_before_opening', { tools: ['previous_visit_reminder'] }]);
+    await speak(h);
+    await h.gem().onMessage(JSON.stringify({ toolCall: { functionCalls: [{ id: 'p2', name: 'previous_visit_reminder', args: {} }] } }));
+    assert.equal(h.core.filter(([k]) => k === 'tools').length, 1, 'once the opening is being said, the tool runs');
+  });
+
   it('no re-ask while a tool runs or after the goodbye', async () => {
     const clock = { t: Date.parse('2026-10-22T15:00:00Z') };
     const h = harness(OPEN, () => [], clock);
@@ -255,6 +278,7 @@ describe('a call', () => {
     const h = harness(OPEN);
     await h.s.start('MZ1', ids);
     h.gem().onOpen();
+    await speak(h);
     await h.gem().onMessage(JSON.stringify({ toolCall: { functionCalls: [{ id: 'f1', name: 'end_call' }] } }));
     await new Promise((r) => setImmediate(r));
     await h.gem().onMessage(JSON.stringify({ toolCall: { functionCalls: [{ id: 'f1b', name: 'end_call' }] } })); // the second one is accepted
@@ -313,6 +337,7 @@ describe('a call', () => {
     const h = harness(OPEN, (list) => list.map((t) => ({ toolCallId: t.id, name: t.name, result: t.name === 'book_appointment' ? '{"ok":true}' : '{"ok":true}' })));
     await h.s.start('MZ1', ids);
     h.gem().onOpen();
+    await speak(h);
     await h.gem().onMessage(JSON.stringify({ toolCall: { functionCalls: [{ id: 'e1', name: 'end_call' }] } }));
     await new Promise((r) => setImmediate(r));
     assert.equal(h.sentToGemini.at(-1).toolResponse.functionResponses[0].response.ok, false, 'refused the first time');
@@ -326,6 +351,7 @@ describe('a call', () => {
     const h = harness(OPEN, (list) => list.map((t) => ({ toolCallId: t.id, name: t.name, result: '{"ok":true,"appointment_summary":"x"}' })));
     await h.s.start('MZ1', ids);
     h.gem().onOpen();
+    await speak(h);
     await h.gem().onMessage(JSON.stringify({ toolCall: { functionCalls: [{ id: 'b1', name: 'book_appointment', args: {} }] } }));
     await new Promise((r) => setImmediate(r));
     await h.gem().onMessage(JSON.stringify({ toolCall: { functionCalls: [{ id: 'e1', name: 'end_call' }] } }));
@@ -338,6 +364,7 @@ describe('a call', () => {
     await h.s.start('MZ1', ids);
     h.gem().onOpen();
     await h.gem().onMessage(JSON.stringify({ setupComplete: {} }));
+    await speak(h);
     const warn = h.timers.find((t) => t.ms === 80_000);
     assert.ok(warn, 'a warning 40 s before the 120 s cap: time enough to take a message');
     warn!.fn();

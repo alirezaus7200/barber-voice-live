@@ -62,6 +62,7 @@ export class CallSession {
   private openingHeard = false;
   private openingTries = 0;
   private turnAudio = false; // the AI's current turn had audio
+  private openingSpoken = false; // the AI has started saying the opening (no tool runs before that)
 
   private deps: SessionDeps;
   private twilio: SocketLike;
@@ -117,6 +118,7 @@ export class CallSession {
         if (code === 1007 && !this.retried) {
           this.retried = true;
           this.ready = false;
+          if (!this.openingHeard) this.openingSpoken = false;
           this.deps.log('gemini_retry', { reason: 'refused at start' });
           this.connectGemini(true);
           return;
@@ -196,7 +198,7 @@ export class CallSession {
       if (!this.openingHeard) this.askOpening();
     }
     for (const part of m.serverContent?.modelTurn?.parts ?? []) {
-      if (part?.inlineData?.data) { this.aiWaitingSince = 0; this.turnAudio = true; }
+      if (part?.inlineData?.data) { this.aiWaitingSince = 0; this.turnAudio = true; this.openingSpoken = true; }
       if (part?.inlineData?.data && !this.firstAudio) { this.firstAudio = true; this.step('first_audio'); }
       if (part?.inlineData?.data) this.twilio.send(JSON.stringify({ event: 'media', streamSid: this.streamSid, media: { payload: geminiToPhone(part.inlineData.data, part.inlineData.mimeType) } }));
     }
@@ -230,6 +232,13 @@ export class CallSession {
 
   private async runTools(calls: { id: string; name: string; args?: unknown }[]) {
     const responses: { id: string; name: string; response: unknown }[] = [];
+    if (!this.openingSpoken) {
+      // e.g. previous_visit_reminder before a word was said: the caller would wait in silence and miss the disclosure
+      this.deps.log('tool_before_opening', { tools: calls.map((c) => c.name) });
+      const response = { ok: false, reason: 'say_opening_first', hint: `First say the opening, word for word: "${this.opening}"` };
+      this.gemini?.send(JSON.stringify({ toolResponse: { functionResponses: calls.map((c) => ({ id: c.id, name: c.name, response })) } }));
+      return;
+    }
     const forCore = calls.filter((c) => CORE_TOOL_NAMES.has(c.name));
     let results: { toolCallId: string; result: string }[] = [];
     if (forCore.length) {
