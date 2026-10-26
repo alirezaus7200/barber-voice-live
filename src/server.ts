@@ -76,6 +76,8 @@ wss.on('connection', (twilio) => {
       await session.start(String(m.start?.streamSid ?? ''), p);
     } else if (m.event === 'media' && typeof m.media?.payload === 'string') {
       session?.fromCaller(m.media.payload);
+    } else if (m.event === 'mark') {
+      session?.played();
     } else if (m.event === 'stop') {
       await session?.finish();
     }
