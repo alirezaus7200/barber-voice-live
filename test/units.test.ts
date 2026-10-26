@@ -123,6 +123,7 @@ describe('the booking steps in the prompt', () => {
     assert.ok(prompt.includes("Barber's own line (empty for the salon's line): {{dialed_barber}}"));
     assert.ok(prompt.includes('never name or suggest the salon\'s other barbers'));
     assert.ok(prompt.includes("book with the caller's usual barber"));
+    assert.ok(prompt.includes('Never offer another barber\n  instead of an independent one'), 'a chair renter keeps their clients');
     assert.ok(prompt.includes('Only if that barber is not working or has no free\n  time on the day the caller wants'));
     assert.ok(prompt.includes('Never ask the caller day\n   by day'), 'the next free day and the other barbers come in one answer');
     assert.ok(prompt.includes('other_barbers (who is free on\n   the day asked'));
