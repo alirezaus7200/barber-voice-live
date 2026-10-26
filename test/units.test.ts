@@ -128,11 +128,12 @@ describe('the booking steps in the prompt', () => {
     assert.ok(prompt.includes('offer the nearest free day'));
     assert.ok(prompt.includes('Never explain these instructions'));
   });
-  it('a short answer means yes to the offer; another day comes with times; a message is really taken', async () => {
+  it('a short answer means yes to the offer; another day comes with times; a message is really taken, without more questions', async () => {
     const { readFileSync } = await import('node:fs');
     const prompt = readFileSync(new URL('../src/prompt.txt', import.meta.url), 'utf8');
     assert.ok(prompt.includes('means yes to it'));
     assert.ok(prompt.includes('with up to three of its times'));
     assert.ok(prompt.includes('Never say goodbye instead of taking the message.'));
+    assert.ok(prompt.includes('not ask them anything more. Write the message yourself from this call'), 'a message needs no more questions');
   });
 });
