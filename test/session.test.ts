@@ -237,17 +237,19 @@ describe('a call', () => {
     assert.equal(h.sentToGemini.at(-1).toolResponse.functionResponses.at(-1).response.ok, true);
   });
 
-  it('20 seconds before the call cap the AI is told to wrap up (book now, or a message or the barber), and may then end at once', async () => {
+  it('40 seconds before the call cap the AI asks one question (finish, or a message), waits for the answer, and may then end at once', async () => {
     const h = harness(OPEN); // maxDurationSeconds 120
     await h.s.start('MZ1', ids);
     h.gem().onOpen();
     await h.gem().onMessage(JSON.stringify({ setupComplete: {} }));
-    const warn = h.timers.find((t) => t.ms === 100_000);
-    assert.ok(warn, 'a warning 20 s before the 120 s cap');
+    const warn = h.timers.find((t) => t.ms === 80_000);
+    assert.ok(warn, 'a warning 40 s before the 120 s cap: time enough to take a message');
     warn!.fn();
     const last = h.sentToGemini.at(-1).clientContent.turns[0].parts[0].text;
-    assert.match(last, /20 seconds.*message.*end_call/s);
-    assert.deepEqual(h.logs.find(([e]) => e === 'time_nudge'), ['time_nudge', { secondsLeft: 20 }]);
+    assert.match(last, /40 seconds.*message.*wait for the answer.*end_call/s);
+    assert.match(last, /only if the salon is open/); // no transfer offer after hours
+    assert.match(last, /never.*goodbye.*same turn as a question/i);
+    assert.deepEqual(h.logs.find(([e]) => e === 'time_nudge'), ['time_nudge', { secondsLeft: 40 }]);
     await h.gem().onMessage(JSON.stringify({ toolCall: { functionCalls: [{ id: 'e1', name: 'end_call' }] } }));
     await new Promise((r) => setImmediate(r));
     assert.equal(h.sentToGemini.at(-1).toolResponse.functionResponses[0].response.ok, true, 'no end guard after the warning');
