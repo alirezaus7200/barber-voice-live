@@ -173,25 +173,54 @@ describe('a call', () => {
     assert.equal(setup.realtimeInputConfig.automaticActivityDetection.startOfSpeechSensitivity, undefined);
   });
 
-  it('after 30 seconds of silence from the caller, the AI thanks them and asks them to call again to book (once)', async () => {
+  it('no answer to the question and both re-asks: 15 s later the AI thanks the caller and ends (once)', async () => {
     const clock = { t: Date.parse('2026-10-22T15:00:00Z') };
     const h = harness(OPEN, () => [], clock);
     await h.s.start('MZ1', ids);
     h.gem().onOpen();
     await h.gem().onMessage(JSON.stringify({ setupComplete: {} }));
     await heard(h);
-    await h.gem().onMessage(JSON.stringify({ serverContent: { turnComplete: true } }));
     const silent = Buffer.alloc(160, 0xff).toString('base64'); // mu-law silence
-    const loud = Buffer.alloc(160, 0x00).toString('base64'); // mu-law at full volume
-    clock.t += 5000; h.s.fromCaller(loud); // the caller speaks: the clock restarts
-    clock.t += 29000; h.s.fromCaller(silent);
-    assert.equal(h.sentToGemini.filter((m) => m.clientContent).length, 1, 'no nudge yet, 29 seconds of silence');
+    const said = () => h.sentToGemini.filter((m) => m.clientContent).map((m) => m.clientContent.turns[0].parts[0].text);
+    const aiSays = async () => {
+      await speak(h);
+      await h.gem().onMessage(JSON.stringify({ serverContent: { turnComplete: true } }));
+    };
+    clock.t += 8000; h.s.fromCaller(silent); // re-ask 1
+    await aiSays();
+    clock.t += 8000; h.s.fromCaller(silent); // re-ask 2
+    await aiSays();
+    clock.t += 14000; h.s.fromCaller(silent);
+    assert.equal(said().length, 3, 'no goodbye yet');
     clock.t += 2000; h.s.fromCaller(silent);
-    clock.t += 1000; h.s.fromCaller(silent);
-    const nudges = h.sentToGemini.filter((m) => m.clientContent);
-    assert.equal(nudges.length, 2, 'the opening, then one nudge');
-    assert.match(nudges[1].clientContent.turns[0].parts[0].text, /30 seconds.*call again.*end_call/s);
-    assert.deepEqual(h.logs.find(([e]) => e === 'silence_nudge'), ['silence_nudge', { silentSeconds: 31 }]);
+    clock.t += 20000; h.s.fromCaller(silent);
+    assert.equal(said().length, 4, 'the opening, 2 re-asks, one goodbye');
+    assert.match(said()[3], /not answered at all.*call again.*end_call/s);
+    assert.deepEqual(h.logs.find(([e]) => e === 'silence_nudge'), ['silence_nudge', { silentSeconds: 16 }]);
+  });
+
+  it('a quiet caller the AI answers, or a long tool run, is never taken for silence (no goodbye mid-booking)', async () => {
+    const clock = { t: Date.parse('2026-10-22T15:00:00Z') };
+    const h = harness(OPEN, () => [], clock);
+    await h.s.start('MZ1', ids);
+    h.gem().onOpen();
+    await h.gem().onMessage(JSON.stringify({ setupComplete: {} }));
+    await heard(h);
+    const silent = Buffer.alloc(160, 0xff).toString('base64');
+    const said = () => h.sentToGemini.filter((m) => m.clientContent).length;
+    clock.t += 8000; h.s.fromCaller(silent); // re-ask 1 (the caller answered too quietly for the meter)
+    await speak(h); await h.gem().onMessage(JSON.stringify({ serverContent: { turnComplete: true } }));
+    clock.t += 8000; h.s.fromCaller(silent); // re-ask 2
+    await speak(h); await h.gem().onMessage(JSON.stringify({ serverContent: { turnComplete: true } }));
+    // Gemini heard the quiet "morning" and answers on its own: the re-asks start again
+    clock.t += 3000; await speak(h);
+    let release: () => void = () => {};
+    (h as any).s.deps.core.tools = () => new Promise((r) => { release = () => r([]); });
+    const running = h.gem().onMessage(JSON.stringify({ toolCall: { functionCalls: [{ id: 't1', name: 'check_availability', args: {} }] } }));
+    clock.t += 40000; h.s.fromCaller(silent);
+    assert.equal(said(), 3, 'no goodbye and no re-ask while the tool runs');
+    release(); await running;
+    assert.ok(!h.logs.some(([e]) => e === 'silence_nudge'));
   });
 
   it('the AI asked and the caller says nothing for 7 s: it asks again; still nothing: the barber or a message', async () => {
@@ -236,6 +265,7 @@ describe('a call', () => {
     clock.t += 800; await h.gem().onMessage(JSON.stringify({ setupComplete: {} }));
     clock.t += 1500; await h.gem().onMessage(JSON.stringify({ serverContent: { modelTurn: { parts: [{ inlineData: { data: Buffer.alloc(480).toString('base64'), mimeType: 'audio/pcm;rate=24000' } }] } } }));
     await h.gem().onMessage(JSON.stringify({ serverContent: { modelTurn: { parts: [{ inlineData: { data: Buffer.alloc(480).toString('base64'), mimeType: 'audio/pcm;rate=24000' } }] } } }));
+    assert.deepEqual(h.logs.find(([e]) => e === 'call_date'), ['call_date', { now: '', days: '' }]);
     assert.deepEqual(h.logs.filter(([e]) => e === 'start_timing').map(([, d]) => [d.step, d.ms, d.retried]), [
       ['core_answered', 1200, false], ['gemini_ready', 2000, false], ['first_audio', 3500, false],
     ]);
