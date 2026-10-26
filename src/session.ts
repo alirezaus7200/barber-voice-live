@@ -26,6 +26,8 @@ export type SessionDeps = {
 const TRANSFER_DELAY_MS = 4000; // the AI says "connecting you now" first
 const HANGUP_DELAY_MS = 1500; // after the goodbye is fully said
 const GOODBYE_MAX_MS = 15000; // safety: hang up even if the goodbye never completes
+const TIME_WARNING_S = 20; // seconds before the call cap when the AI is told to wrap up
+const TIME_NUDGE = 'About 20 seconds are left in this call. If a booking is almost done, finish it now. Otherwise offer to take a message for the salon or to connect the caller to the barber. Then say a short goodbye in the caller\'s language and call end_call.';
 const SILENCE_NUDGE_MS = 30000; // the caller says nothing this long: the AI thanks them and ends the call (fewer paid seconds)
 const SPEECH_PEAK = 1500; // of 32767: louder than the line's background noise
 const SILENCE_NUDGE = 'The caller has been silent for about 30 seconds. Thank them for calling, say they are welcome to call again to book their appointment, then call end_call. Say it in the caller\'s last language.';
@@ -74,6 +76,8 @@ export class CallSession {
     this.opening = String(o.firstMessage ?? '');
     const max = Number(o.maxDurationSeconds) > 0 ? Number(o.maxDurationSeconds) : 600;
     this.timers.push(this.deps.setTimer(max * 1000, () => { this.endedReason = 'exceeded-max-duration'; void this.hangUp(); }));
+    // shortly before the cap the AI wraps up itself, so the call is not cut mid-sentence
+    if (max > TIME_WARNING_S * 2) this.timers.push(this.deps.setTimer((max - TIME_WARNING_S) * 1000, () => this.warnTimeLeft()));
     this.variables = o.variableValues ?? {};
     this.connectGemini();
   }
@@ -106,6 +110,14 @@ export class CallSession {
         void this.hangUp();
       },
     });
+  }
+
+  /** The call cap is near: tell the AI to wrap up; its goodbye is then not held back by the end guard. */
+  private warnTimeLeft() {
+    if (this.closed || !this.gemini) return;
+    this.refusedEnd = true;
+    this.deps.log('time_nudge', { secondsLeft: TIME_WARNING_S });
+    this.gemini.send(JSON.stringify({ clientContent: { turns: [{ role: 'user', parts: [{ text: TIME_NUDGE }] }], turnComplete: true } }));
   }
 
   /** Twilio "media": the caller's audio. */
