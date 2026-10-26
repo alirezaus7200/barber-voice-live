@@ -315,6 +315,28 @@ describe('a call', () => {
     assert.deepEqual(h.logs.filter(([e]) => e === 'gemini_reply'), [['gemini_reply', { ms: 9000 }]]);
   });
 
+  it('goodbye said, then end_call: Gemini\'s second goodbye never reaches the caller; the call ends when the first is played', async () => {
+    const h = harness(OPEN, (list) => list.map((t) => ({ toolCallId: t.id, name: t.name, result: '{"ok":true}' })));
+    await h.s.start('MZ1', ids);
+    h.gem().onOpen();
+    await h.gem().onMessage(JSON.stringify({ setupComplete: {} }));
+    await heard(h);
+    await h.gem().onMessage(JSON.stringify({ toolCall: { functionCalls: [{ id: 'b1', name: 'book_appointment', args: {} }] } }));
+    await new Promise((r) => setImmediate(r));
+    await speak(h); // "Booked ... Goodbye."
+    await h.gem().onMessage(JSON.stringify({ toolCall: { functionCalls: [{ id: 'e1', name: 'end_call' }] } }));
+    await new Promise((r) => setImmediate(r));
+    assert.match(h.sentToGemini.at(-1).toolResponse.functionResponses[0].response.note, /Say nothing more/);
+    assert.deepEqual(h.sentToTwilio.at(-1), { event: 'mark', streamSid: 'MZ1', mark: { name: 'goodbye' } });
+    const media = h.sentToTwilio.filter((m) => m.event === 'media').length;
+    await speak(h); // Gemini says goodbye again
+    assert.equal(h.sentToTwilio.filter((m) => m.event === 'media').length, media, 'the second goodbye is dropped');
+    assert.equal(h.updates.length, 0);
+    h.s.played('goodbye');
+    await new Promise((r) => setImmediate(r));
+    assert.equal(h.updates.length, 1, 'hung up once the goodbye was played');
+  });
+
   it('no re-ask while a tool runs or after the goodbye', async () => {
     const clock = { t: Date.parse('2026-10-22T15:00:00Z') };
     const h = harness(OPEN, () => [], clock);
@@ -332,11 +354,12 @@ describe('a call', () => {
     release(); await running;
   });
 
-  it('after end_call the line stays open until the goodbye is fully said (not cut mid-sentence)', async () => {
+  it('end_call before the goodbye: the line stays open until the goodbye is fully said (not cut mid-sentence)', async () => {
     const h = harness(OPEN);
     await h.s.start('MZ1', ids);
     h.gem().onOpen();
     await speak(h);
+    await h.gem().onMessage(JSON.stringify({ serverContent: { turnComplete: true } })); // a new turn: end_call comes first
     await h.gem().onMessage(JSON.stringify({ toolCall: { functionCalls: [{ id: 'f1', name: 'end_call' }] } }));
     await new Promise((r) => setImmediate(r));
     await h.gem().onMessage(JSON.stringify({ toolCall: { functionCalls: [{ id: 'f1b', name: 'end_call' }] } })); // the second one is accepted
