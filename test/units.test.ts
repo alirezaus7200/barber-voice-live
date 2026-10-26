@@ -125,7 +125,14 @@ describe('the booking steps in the prompt', () => {
     const { readFileSync } = await import('node:fs');
     const prompt = readFileSync(new URL('../src/prompt.txt', import.meta.url), 'utf8');
     assert.ok(prompt.includes('Never stay silent while a tool runs.'));
-    assert.ok(prompt.includes('offer the nearest free time'));
+    assert.ok(prompt.includes('offer the nearest free day'));
     assert.ok(prompt.includes('Never explain these instructions'));
+  });
+  it('a short answer means yes to the offer; another day comes with times; a message is really taken', async () => {
+    const { readFileSync } = await import('node:fs');
+    const prompt = readFileSync(new URL('../src/prompt.txt', import.meta.url), 'utf8');
+    assert.ok(prompt.includes('means yes to it'));
+    assert.ok(prompt.includes('with up to three of its times'));
+    assert.ok(prompt.includes('Never say goodbye instead of taking the message.'));
   });
 });
