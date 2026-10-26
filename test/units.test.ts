@@ -123,8 +123,10 @@ describe('the booking steps in the prompt', () => {
     assert.ok(prompt.includes("Barber's own line (empty for the salon's line): {{dialed_barber}}"));
     assert.ok(prompt.includes('never name or suggest the salon\'s other barbers'));
     assert.ok(prompt.includes("book with the caller's usual barber"));
+    assert.ok(prompt.includes('Never offer another barber\n  instead of an independent one'), 'a chair renter keeps their clients');
     assert.ok(prompt.includes('Only if that barber is not working or has no free\n  time on the day the caller wants'));
-    assert.ok(prompt.includes('do not give up after one "no"'));
+    assert.ok(prompt.includes('Never ask the caller day\n   by day'), 'the next free day and the other barbers come in one answer');
+    assert.ok(prompt.includes('other_barbers (who is free on\n   the day asked'));
   });
 
   it('a booking that does not work out: the AI offers to connect the caller to the barber', async () => {
@@ -144,7 +146,7 @@ describe('the booking steps in the prompt', () => {
     const { readFileSync } = await import('node:fs');
     const prompt = readFileSync(new URL('../src/prompt.txt', import.meta.url), 'utf8');
     assert.ok(prompt.includes('means yes to it'));
-    assert.ok(prompt.includes("that barber's nearest free day with up to three of"));
+    assert.ok(prompt.includes("that barber's nearest free day, with up to\n   three of its times"));
     assert.ok(prompt.includes('Never say goodbye instead of taking the message.'));
     assert.ok(prompt.includes('not ask them anything more and do not say goodbye yet'), 'a message needs no more questions, and no early goodbye');
     assert.ok(prompt.includes('Say goodbye only once in\na call, as your very last words'));

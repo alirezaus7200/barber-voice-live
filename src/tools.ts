@@ -8,7 +8,7 @@ const language = { type: 'string', description: "The caller's language code, e.g
 export const CORE_TOOLS = [
   {
     name: 'check_availability',
-    description: 'Free start times for one barber, a list of services and one day (salon time). Offer at most three.',
+    description: 'Free start times for one barber, a list of services and one day (salon time). Offer at most three. If that day is full, the same answer gives the barber\'s next free day with its times and the other barbers free that day: offer those at once, never day by day.',
     parameters: {
       type: 'object',
       properties: {
