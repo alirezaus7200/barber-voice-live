@@ -300,6 +300,21 @@ describe('a call', () => {
     assert.match(r.next, /tell the caller the barber will get their message.*goodbye \(only once/s);
   });
 
+  it('a long pause after a tool is split in the logs: barber-core (tool_timing) and Gemini (gemini_reply)', async () => {
+    const clock = { t: Date.parse('2026-10-22T15:00:00Z') };
+    const h = harness(OPEN, (list) => { clock.t += 2500; return list.map((t) => ({ toolCallId: t.id, name: t.name, result: '{"ok":true}' })); }, clock);
+    await h.s.start('MZ1', ids);
+    h.gem().onOpen();
+    await h.gem().onMessage(JSON.stringify({ setupComplete: {} }));
+    await speak(h);
+    await h.gem().onMessage(JSON.stringify({ toolCall: { functionCalls: [{ id: 'b1', name: 'book_appointment', args: {} }] } }));
+    await new Promise((r) => setImmediate(r));
+    clock.t += 9000; await speak(h);
+    await speak(h);
+    assert.deepEqual(h.logs.find(([e]) => e === 'tool_timing'), ['tool_timing', { tools: ['book_appointment'], ms: 2500 }]);
+    assert.deepEqual(h.logs.filter(([e]) => e === 'gemini_reply'), [['gemini_reply', { ms: 9000 }]]);
+  });
+
   it('no re-ask while a tool runs or after the goodbye', async () => {
     const clock = { t: Date.parse('2026-10-22T15:00:00Z') };
     const h = harness(OPEN, () => [], clock);

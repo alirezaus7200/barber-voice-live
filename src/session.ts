@@ -48,7 +48,8 @@ export class CallSession {
   private closed = false;
   private opening = '';
   private nudged = false;
-  private nudgePending = false; // the AI's next turn answers our re-ask, not the caller
+  private nudgePending = false;
+  private toolAnsweredAt = 0; // when the last tool answer went to Gemini, until it speaks again // the AI's next turn answers our re-ask, not the caller
   private aiWaitingSince = 0; // the AI finished a turn and waits for the caller (0: it does not)
   private reasks = 0; // re-asks since the caller last spoke (at most 2)
   private hangUpWhenSaid = false;
@@ -207,7 +208,11 @@ export class CallSession {
         this.aiWaitingSince = 0;
         this.turnAudio = true;
         this.openingSpoken = true;
-        if (!this.nudgePending) this.reasks = 0; // the AI answers the caller (who may speak too quietly for the meter)
+        if (!this.nudgePending) this.reasks = 0;
+        if (this.toolAnsweredAt) {
+          this.deps.log('gemini_reply', { ms: this.deps.now().getTime() - this.toolAnsweredAt });
+          this.toolAnsweredAt = 0;
+        } // the AI answers the caller (who may speak too quietly for the meter)
       }
       if (part?.inlineData?.data && !this.firstAudio) { this.firstAudio = true; this.step('first_audio'); }
       if (part?.inlineData?.data) this.twilio.send(JSON.stringify({ event: 'media', streamSid: this.streamSid, media: { payload: geminiToPhone(part.inlineData.data, part.inlineData.mimeType) } }));
@@ -253,7 +258,10 @@ export class CallSession {
     let results: { toolCallId: string; result: string }[] = [];
     if (forCore.length) {
       try {
+        const t = this.deps.now().getTime();
         results = await this.deps.core.tools(this.ids, forCore.map((c) => ({ id: c.id, name: c.name, args: c.args ?? {} })));
+        // how long barber-core took (a long pause in a call is either this or gemini_reply)
+        this.deps.log('tool_timing', { tools: forCore.map((c) => c.name), ms: this.deps.now().getTime() - t });
       } catch (e: any) {
         this.deps.log('core_tools_failed', { call: this.ids.callSid, error: String(e?.message ?? e) });
       }
@@ -290,6 +298,7 @@ export class CallSession {
       }
     }
     this.gemini?.send(JSON.stringify({ toolResponse: { functionResponses: responses } }));
+    this.toolAnsweredAt = this.deps.now().getTime();
   }
 
   private async handOff(twiml: string, reason: string) {
