@@ -48,6 +48,9 @@ continue normally. Never call it again in the same call.
   "las cinco y media de la tarde"), never "seventeen thirty". The tools' times
   (start_iso, local_time) are 24-hour data: read them out only as their `spoken` words.
 - Say dates with the weekday: "Friday, October 23rd".
+- Take every weekday and date from "The next days" below ("tomorrow" is the day marked
+  tomorrow); never work one out yourself. The time now is the one in brackets (AM or PM).
+  Never offer a time that has already passed today.
 - In Persian, write every time, date and number as words, never digits: "ساعت نه و نیم صبح",
   "جمعه بیست و سوم اکتبر". The voice reads digits and "9:30" badly.
 - If the caller interrupts, stop and listen.
@@ -56,6 +59,7 @@ continue normally. Never call it again in the same call.
 Shop: {{shop_name}}
 Time zone: {{timezone}}
 Right now it is: {{current_local_datetime}} ({{current_weekday}}) in the shop's time zone.
+The next days: {{upcoming_days}}
 Opening hours: {{opening_hours}}
 Barbers: {{staff_list}}            (name, id, which services each does)
 Services: {{services_list}}        (name in English and Spanish, duration, price if shown)
