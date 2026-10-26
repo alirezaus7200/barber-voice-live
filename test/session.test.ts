@@ -187,6 +187,20 @@ describe('a call', () => {
     assert.equal(said().length, 4);
   });
 
+  it('logs how long the start took: barber-core, Gemini ready, the first audio the caller hears', async () => {
+    const clock = { t: Date.parse('2026-10-22T15:00:00Z') };
+    const h = harness(OPEN, () => [], clock);
+    const start = h.s.start('MZ1', ids);
+    clock.t += 1200; await start;
+    h.gem().onOpen();
+    clock.t += 800; await h.gem().onMessage(JSON.stringify({ setupComplete: {} }));
+    clock.t += 1500; await h.gem().onMessage(JSON.stringify({ serverContent: { modelTurn: { parts: [{ inlineData: { data: Buffer.alloc(480).toString('base64'), mimeType: 'audio/pcm;rate=24000' } }] } } }));
+    await h.gem().onMessage(JSON.stringify({ serverContent: { modelTurn: { parts: [{ inlineData: { data: Buffer.alloc(480).toString('base64'), mimeType: 'audio/pcm;rate=24000' } }] } } }));
+    assert.deepEqual(h.logs.filter(([e]) => e === 'start_timing').map(([, d]) => [d.step, d.ms, d.retried]), [
+      ['core_answered', 1200, false], ['gemini_ready', 2000, false], ['first_audio', 3500, false],
+    ]);
+  });
+
   it('no re-ask while a tool runs or after the goodbye', async () => {
     const clock = { t: Date.parse('2026-10-22T15:00:00Z') };
     const h = harness(OPEN, () => [], clock);

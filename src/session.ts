@@ -54,6 +54,8 @@ export class CallSession {
   private refusedEnd = false; // the first early end_call is refused once, so the AI asks again
   private variables: Record<string, unknown> = {};
   private retried = false;
+  private t0 = 0; // when Twilio's start came (ms), for the start-up timings
+  private firstAudio = false;
 
   private deps: SessionDeps;
   private twilio: SocketLike;
@@ -68,6 +70,7 @@ export class CallSession {
     this.streamSid = streamSid;
     this.ids = { callId: p.callSid, callSid: p.callSid, to: p.to, from: p.from };
     this.started = this.deps.now().toISOString();
+    this.t0 = this.deps.now().getTime();
     let r: any;
     try {
       r = await this.deps.core.start(this.ids);
@@ -77,6 +80,7 @@ export class CallSession {
     }
     if (r?.destination?.number) return this.handOff(dialTwiml(r.destination.number, p.from) ?? sayTwiml(''), 'assistant-forwarded-call');
     if (typeof r?.error === 'string' || !r?.assistantOverrides) return this.handOff(sayTwiml(String(r?.error ?? '')), 'assistant-request-returned-error');
+    this.step('core_answered');
     const o = r.assistantOverrides;
     this.opening = String(o.firstMessage ?? '');
     const max = Number(o.maxDurationSeconds) > 0 ? Number(o.maxDurationSeconds) : 600;
@@ -148,6 +152,11 @@ export class CallSession {
     }
   }
 
+  /** Start-up timing: how long after Twilio's start each step came (the caller hears nothing until first_audio). */
+  private step(name: string) {
+    this.deps.log('start_timing', { step: name, ms: this.deps.now().getTime() - this.t0, retried: this.retried });
+  }
+
   /** Twilio "mark": what the AI said has been fully played to the caller; the wait for an answer starts now. */
   played() {
     if (this.aiWaitingSince) this.aiWaitingSince = this.deps.now().getTime();
@@ -159,6 +168,7 @@ export class CallSession {
     // Gemini says it will close the session soon (goAway): log why, so a short call can be explained
     if (m.goAway) this.deps.log('gemini_go_away', { timeLeft: String(m.goAway.timeLeft ?? '') });
     if (m.setupComplete) {
+      this.step('gemini_ready');
       this.ready = true;
       this.lastSpeechAt = this.deps.now().getTime();
       // the AI disclosure and the recording notice come first, word for word (barber-core's opening)
@@ -169,6 +179,7 @@ export class CallSession {
     }
     for (const part of m.serverContent?.modelTurn?.parts ?? []) {
       if (part?.inlineData?.data) this.aiWaitingSince = 0;
+      if (part?.inlineData?.data && !this.firstAudio) { this.firstAudio = true; this.step('first_audio'); }
       if (part?.inlineData?.data) this.twilio.send(JSON.stringify({ event: 'media', streamSid: this.streamSid, media: { payload: geminiToPhone(part.inlineData.data, part.inlineData.mimeType) } }));
     }
     // the caller spoke over the AI: drop what Twilio still has queued
