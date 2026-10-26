@@ -287,6 +287,19 @@ describe('a call', () => {
     assert.equal(h.core.filter(([k]) => k === 'tools').length, 1, 'once the opening is being said, the tool runs');
   });
 
+  it('a message passed on: the AI is told to say so first, then one goodbye, then end_call', async () => {
+    const h = harness(OPEN, (list) => list.map((t) => ({ toolCallId: t.id, name: t.name, result: '{"ok":true,"message_id":"m1"}' })));
+    await h.s.start('MZ1', ids);
+    h.gem().onOpen();
+    await h.gem().onMessage(JSON.stringify({ setupComplete: {} }));
+    await speak(h);
+    await h.gem().onMessage(JSON.stringify({ toolCall: { functionCalls: [{ id: 'm1', name: 'take_message', args: { message: 'wants Alireza tomorrow; please call back' } }] } }));
+    await new Promise((r) => setImmediate(r));
+    const r = h.sentToGemini.at(-1).toolResponse.functionResponses[0].response;
+    assert.equal(r.ok, true);
+    assert.match(r.next, /tell the caller the barber will get their message.*goodbye \(only once/s);
+  });
+
   it('no re-ask while a tool runs or after the goodbye', async () => {
     const clock = { t: Date.parse('2026-10-22T15:00:00Z') };
     const h = harness(OPEN, () => [], clock);

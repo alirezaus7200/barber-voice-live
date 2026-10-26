@@ -32,6 +32,7 @@ const SILENCE_NUDGE_MS = 15000; // after both re-asks the caller still says noth
 const REASK_MS = 7000; // the AI asked and the caller says nothing this long: the AI asks again (callers do not wait in silence)
 const REASK = 'The caller has not answered for about 7 seconds. Ask your last question again, shorter and clearly, in the caller\'s language. If it was about a booking, keep going with the booking.';
 const REASK_OFFER = 'The caller still has not answered. If a booking is not finished, ask: shall I connect you to the barber, or take a message for the barber? (Offer to connect only if the salon is open now; otherwise offer only the message.) If the booking is done, ask if there is anything else. Then wait for the answer.';
+const MESSAGE_DONE = 'The message is passed on. Now, in one short answer, tell the caller the barber will get their message and get back to them, then say goodbye (only once in this call), and call end_call.';
 const OPENING_MAX_MS = 20000; // Twilio never confirmed the opening was played: the caller is heard anyway after this
 const SPEECH_PEAK = 1500; // of 32767: louder than the line's background noise
 const SILENCE_NUDGE = 'The caller has not answered at all. Thank them for calling, say they are welcome to call again to book their appointment, then call end_call. Say it in the caller\'s last language.';
@@ -279,6 +280,8 @@ export class CallSession {
       try { if (raw) result = JSON.parse(raw); } catch { /* keep system_error */ }
       this.deps.log('tool_result', { tool: c.name, ok: result?.ok === true });
       if (result?.ok === true && ['book_appointment', 'take_message', 'transfer_to_human', 'cancel_appointment', 'reschedule_appointment'].includes(c.name)) this.outcome = true;
+      // a message is passed on: only now the caller hears so, then one goodbye (never a goodbye first)
+      if (c.name === 'take_message' && result?.ok === true && !calls.some((x) => x.name === 'end_call')) result = { ...result, next: MESSAGE_DONE };
       responses.push({ id: c.id, name: c.name, response: result });
       // barber-core said a person can take the call now (only while the salon is open): move it there
       if (c.name === 'transfer_to_human' && result?.ok === true && typeof result.transfer_to === 'string') {
