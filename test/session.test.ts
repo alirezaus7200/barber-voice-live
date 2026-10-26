@@ -155,6 +155,54 @@ describe('a call', () => {
     assert.deepEqual(h.logs.find(([e]) => e === 'silence_nudge'), ['silence_nudge', { silentSeconds: 31 }]);
   });
 
+  it('the AI asked and the caller says nothing for 7 s: it asks again; still nothing: the barber or a message', async () => {
+    const clock = { t: Date.parse('2026-10-22T15:00:00Z') };
+    const h = harness(OPEN, () => [], clock);
+    await h.s.start('MZ1', ids);
+    h.gem().onOpen();
+    await h.gem().onMessage(JSON.stringify({ setupComplete: {} }));
+    const silent = Buffer.alloc(160, 0xff).toString('base64');
+    const loud = Buffer.alloc(160, 0x00).toString('base64');
+    const said = () => h.sentToGemini.filter((m) => m.clientContent).map((m) => m.clientContent.turns[0].parts[0].text);
+    await h.gem().onMessage(JSON.stringify({ serverContent: { turnComplete: true } }));
+    assert.deepEqual(h.sentToTwilio.at(-1), { event: 'mark', streamSid: 'MZ1', mark: { name: 'ai-turn' } }, 'Twilio says when the question has been played');
+    clock.t += 4000; h.s.played(); // the question took 4 s to play: the wait starts now
+    clock.t += 6000; h.s.fromCaller(silent);
+    assert.equal(said().length, 1, 'only 6 s since the question was heard');
+    clock.t += 2000; h.s.fromCaller(silent);
+    assert.match(said()[1], /7 seconds.*question again/s);
+    clock.t += 8000; h.s.fromCaller(silent);
+    assert.equal(said().length, 2, 'the AI has not said the re-ask yet: no second one');
+    await h.gem().onMessage(JSON.stringify({ serverContent: { turnComplete: true } }));
+    clock.t += 8000; h.s.fromCaller(silent);
+    assert.match(said()[2], /connect you to the barber, or take a message.*only if the salon is open/s);
+    await h.gem().onMessage(JSON.stringify({ serverContent: { turnComplete: true } }));
+    clock.t += 8000; h.s.fromCaller(silent);
+    assert.equal(said().length, 3, 'at most 2 re-asks; then the 30 s silence rule ends the call');
+    assert.deepEqual(h.logs.filter(([e]) => e === 'reask'), [['reask', { n: 1 }], ['reask', { n: 2 }]]);
+    // the caller answers: the count starts again
+    h.s.fromCaller(loud);
+    await h.gem().onMessage(JSON.stringify({ serverContent: { turnComplete: true } }));
+    clock.t += 8000; h.s.fromCaller(silent);
+    assert.equal(said().length, 4);
+  });
+
+  it('no re-ask while a tool runs or after the goodbye', async () => {
+    const clock = { t: Date.parse('2026-10-22T15:00:00Z') };
+    const h = harness(OPEN, () => [], clock);
+    await h.s.start('MZ1', ids);
+    h.gem().onOpen();
+    await h.gem().onMessage(JSON.stringify({ setupComplete: {} }));
+    const silent = Buffer.alloc(160, 0xff).toString('base64');
+    await h.gem().onMessage(JSON.stringify({ serverContent: { turnComplete: true } }));
+    let release: () => void = () => {};
+    (h as any).s.deps.core.tools = () => new Promise((r) => { release = () => r([]); });
+    const running = h.gem().onMessage(JSON.stringify({ toolCall: { functionCalls: [{ id: 't1', name: 'check_availability', args: {} }] } }));
+    clock.t += 10000; h.s.fromCaller(silent);
+    assert.equal(h.sentToGemini.filter((m) => m.clientContent).length, 1, 'the tool is running: no re-ask');
+    release(); await running;
+  });
+
   it('after end_call the line stays open until the goodbye is fully said (not cut mid-sentence)', async () => {
     const h = harness(OPEN);
     await h.s.start('MZ1', ids);

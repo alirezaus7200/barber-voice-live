@@ -27,8 +27,11 @@ const TRANSFER_DELAY_MS = 4000; // the AI says "connecting you now" first
 const HANGUP_DELAY_MS = 1500; // after the goodbye is fully said
 const GOODBYE_MAX_MS = 15000; // safety: hang up even if the goodbye never completes
 const TIME_WARNING_S = 40; // seconds before the call cap when the AI is told to wrap up (enough to take a message)
-const TIME_NUDGE = 'About 40 seconds are left in this call. If a booking is almost done, finish it now. Otherwise ask the caller one short question: shall I take a message for the salon? (Offer to connect them to the barber only if the salon is open now.) Then stop and wait for the answer. If they want a message, take it with take_message, then say a short goodbye in the caller\'s language and call end_call. Never say goodbye in the same turn as a question.';
+const TIME_NUDGE = 'About 40 seconds are left in this call. If a booking is not finished, ask the one question still missing, short, and finish it now. If it cannot be finished, ask the caller: shall I connect you to the barber, or take a message for the barber? (Offer to connect them only if the salon is open now; otherwise offer only the message.) Then stop and wait for the answer. If they want a message, take it with take_message, then say a short goodbye in the caller\'s language and call end_call. Never say goodbye in the same turn as a question.';
 const SILENCE_NUDGE_MS = 30000; // the caller says nothing this long: the AI thanks them and ends the call (fewer paid seconds)
+const REASK_MS = 7000; // the AI asked and the caller says nothing this long: the AI asks again (callers do not wait in silence)
+const REASK = 'The caller has not answered for about 7 seconds. Ask your last question again, shorter and clearly, in the caller\'s language. If it was about a booking, keep going with the booking.';
+const REASK_OFFER = 'The caller still has not answered. If a booking is not finished, ask: shall I connect you to the barber, or take a message for the barber? (Offer to connect only if the salon is open now; otherwise offer only the message.) If the booking is done, ask if there is anything else. Then wait for the answer.';
 const SPEECH_PEAK = 1500; // of 32767: louder than the line's background noise
 const SILENCE_NUDGE = 'The caller has been silent for about 30 seconds. Thank them for calling, say they are welcome to call again to book their appointment, then call end_call. Say it in the caller\'s last language.';
 
@@ -44,6 +47,8 @@ export class CallSession {
   private opening = '';
   private lastSpeechAt = 0;
   private nudged = false;
+  private aiWaitingSince = 0; // the AI finished a turn and waits for the caller (0: it does not)
+  private reasks = 0; // re-asks since the caller last spoke (at most 2)
   private hangUpWhenSaid = false;
   private outcome = false; // a booking, a message or a transfer happened in this call
   private refusedEnd = false; // the first early end_call is refused once, so the AI asks again
@@ -125,14 +130,27 @@ export class CallSession {
     if (this.ready && this.gemini) {
       const now = this.deps.now().getTime();
       const pcm = mulawToPcm16(Buffer.from(payloadB64, 'base64'));
-      if (peakOf(pcm) > SPEECH_PEAK) this.lastSpeechAt = now;
-      else if (!this.nudged && now - this.lastSpeechAt > SILENCE_NUDGE_MS) {
+      if (peakOf(pcm) > SPEECH_PEAK) {
+        this.lastSpeechAt = now;
+        this.aiWaitingSince = 0;
+        this.reasks = 0;
+      } else if (this.aiWaitingSince && now - this.aiWaitingSince > REASK_MS && this.reasks < 2 && !this.hangUpWhenSaid) {
+        this.reasks += 1;
+        this.aiWaitingSince = 0;
+        this.deps.log('reask', { n: this.reasks });
+        this.gemini.send(JSON.stringify({ clientContent: { turns: [{ role: 'user', parts: [{ text: this.reasks === 1 ? REASK : REASK_OFFER }] }], turnComplete: true } }));
+      } else if (!this.nudged && now - this.lastSpeechAt > SILENCE_NUDGE_MS) {
         this.nudged = true;
         this.deps.log('silence_nudge', { silentSeconds: Math.round((now - this.lastSpeechAt) / 1000) });
         this.gemini.send(JSON.stringify({ clientContent: { turns: [{ role: 'user', parts: [{ text: SILENCE_NUDGE }] }], turnComplete: true } }));
       }
       this.gemini.send(JSON.stringify({ realtimeInput: { audio: { data: phoneToGemini(payloadB64), mimeType: 'audio/pcm;rate=16000' } } }));
     }
+  }
+
+  /** Twilio "mark": what the AI said has been fully played to the caller; the wait for an answer starts now. */
+  played() {
+    if (this.aiWaitingSince) this.aiWaitingSince = this.deps.now().getTime();
   }
 
   private async fromGemini(text: string) {
@@ -150,14 +168,21 @@ export class CallSession {
       } }));
     }
     for (const part of m.serverContent?.modelTurn?.parts ?? []) {
+      if (part?.inlineData?.data) this.aiWaitingSince = 0;
       if (part?.inlineData?.data) this.twilio.send(JSON.stringify({ event: 'media', streamSid: this.streamSid, media: { payload: geminiToPhone(part.inlineData.data, part.inlineData.mimeType) } }));
     }
     // the caller spoke over the AI: drop what Twilio still has queued
     if (m.serverContent?.turnComplete) {
       this.lastSpeechAt = this.deps.now().getTime(); // the AI finished: the silence starts now
+      if (!this.hangUpWhenSaid) {
+        // Twilio sends the mark back once the audio is played; until then the turn's end counts
+        this.aiWaitingSince = this.lastSpeechAt;
+        this.twilio.send(JSON.stringify({ event: 'mark', streamSid: this.streamSid, mark: { name: 'ai-turn' } }));
+      }
       if (this.hangUpWhenSaid) this.timers.push(this.deps.setTimer(HANGUP_DELAY_MS, () => void this.hangUp()));
     }
     if (m.serverContent?.interrupted) this.twilio.send(JSON.stringify({ event: 'clear', streamSid: this.streamSid }));
+    if (m.toolCall?.functionCalls?.length) this.aiWaitingSince = 0; // a tool runs: the caller is not being asked
     if (m.toolCall?.functionCalls?.length) await this.runTools(m.toolCall.functionCalls);
   }
 
