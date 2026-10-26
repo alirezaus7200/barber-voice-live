@@ -71,8 +71,8 @@ export const CORE_TOOLS = [
   },
   {
     name: 'transfer_to_human',
-    description: 'Asks whether a person can take this call now. If ok, tell the caller you are connecting them now (the call moves by itself); otherwise take a message.',
-    parameters: { type: 'object', properties: { reason: { type: 'string' } } },
+    description: 'Asks whether a person can take this call now: the chosen barber (staff_id) if the salon set a phone for them, else the salon. If ok, tell the caller you are connecting them now (the call moves by itself); otherwise take a message.',
+    parameters: { type: 'object', properties: { reason: { type: 'string' }, staff_id: { type: 'string', description: 'The barber the caller wants to talk to (staff_list id), if any.' } } },
   },
 ] as const;
 
