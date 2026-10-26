@@ -49,7 +49,8 @@ export class CallSession {
   private opening = '';
   private nudged = false;
   private nudgePending = false;
-  private toolAnsweredAt = 0; // when the last tool answer went to Gemini, until it speaks again // the AI's next turn answers our re-ask, not the caller
+  private toolAnsweredAt = 0;
+  private muted = false; // after the goodbye and end_call: no more AI audio for the caller // when the last tool answer went to Gemini, until it speaks again // the AI's next turn answers our re-ask, not the caller
   private aiWaitingSince = 0; // the AI finished a turn and waits for the caller (0: it does not)
   private reasks = 0; // re-asks since the caller last spoke (at most 2)
   private hangUpWhenSaid = false;
@@ -184,6 +185,7 @@ export class CallSession {
 
   /** Twilio "mark": what the AI said has been fully played to the caller; the wait for an answer starts now. */
   played(name?: string) {
+    if (name === 'goodbye') return void this.hangUp();
     if (name === 'opening' && !this.openingHeard) {
       this.openingHeard = true;
       this.step('opening_heard');
@@ -204,6 +206,7 @@ export class CallSession {
       if (!this.openingHeard) this.askOpening();
     }
     for (const part of m.serverContent?.modelTurn?.parts ?? []) {
+      if (part?.inlineData?.data && this.muted) continue;
       if (part?.inlineData?.data) {
         this.aiWaitingSince = 0;
         this.turnAudio = true;
@@ -275,8 +278,17 @@ export class CallSession {
           responses.push({ id: c.id, name: c.name, response: { ok: false, reason: 'not_finished', hint: 'Ask whether the caller wants to book or leave a message before you end the call.' } });
           continue;
         }
-        responses.push({ id: c.id, name: c.name, response: { ok: true } });
         this.endedReason = 'assistant-ended-call';
+        if (this.turnAudio) {
+          // the goodbye was already said in this turn: nothing more reaches the caller (no second goodbye);
+          // hang up once Twilio has played what is queued
+          this.muted = true;
+          responses.push({ id: c.id, name: c.name, response: { ok: true, note: 'The goodbye was said. Say nothing more.' } });
+          this.twilio.send(JSON.stringify({ event: 'mark', streamSid: this.streamSid, mark: { name: 'goodbye' } }));
+          this.timers.push(this.deps.setTimer(GOODBYE_MAX_MS, () => void this.hangUp()));
+          continue;
+        }
+        responses.push({ id: c.id, name: c.name, response: { ok: true, note: 'Say one short goodbye now, and nothing else.' } });
         // the goodbye is still being spoken: hang up only after it completes (see fromGemini)
         this.hangUpWhenSaid = true;
         this.timers.push(this.deps.setTimer(GOODBYE_MAX_MS, () => void this.hangUp()));
