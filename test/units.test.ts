@@ -94,13 +94,15 @@ describe('tools and settings', () => {
 });
 
 describe('the booking steps in the prompt', () => {
-  it('get the caller name before the read-back, and never end the call before book_appointment answers', async () => {
+  it('name, then WhatsApp consent, then a full read-back, all before book_appointment; never end before it answers', async () => {
     const { readFileSync } = await import('node:fs');
     const prompt = readFileSync(new URL('../src/prompt.txt', import.meta.url), 'utf8');
     const name = prompt.indexOf("first get the caller's name");
-    const readBack = prompt.indexOf('Then read it back');
-    assert.ok(name > 0 && readBack > name, 'the name is asked before the read-back');
-    assert.ok(prompt.includes('Never end the call before book_appointment has answered ok'));
+    const consent = prompt.indexOf('Before booking, ask for permission to send WhatsApp reminders');
+    const readBack = prompt.indexOf('Then read it all back in one sentence, every time: barber, services,\n   weekday, date and time');
+    const book = prompt.indexOf('call book_appointment. Never end the call before it');
+    assert.ok(name > 0 && consent > name && readBack > consent && book > readBack, 'name, consent, read-back, booking');
+    assert.ok(prompt.includes('never ask\n   after booking'), 'consent is recorded only in the booking call');
   });
   it('the known caller is greeted by first name and offered the usual barber and last services, once; noise is never guessed', async () => {
     const { readFileSync } = await import('node:fs');
