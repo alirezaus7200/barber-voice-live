@@ -28,13 +28,13 @@ const HANGUP_DELAY_MS = 1500; // after the goodbye is fully said
 const GOODBYE_MAX_MS = 15000; // safety: hang up even if the goodbye never completes
 const TIME_WARNING_S = 40; // seconds before the call cap when the AI is told to wrap up (enough to take a message)
 const TIME_NUDGE = 'About 40 seconds are left in this call. If a booking is not finished, ask the one question still missing, short, and finish it now. If it cannot be finished, ask the caller: shall I connect you to the barber, or take a message for the barber? (Offer to connect them only if the salon is open now; otherwise offer only the message.) Then stop and wait for the answer. If they want a message, take it with take_message, then say a short goodbye in the caller\'s language and call end_call. Never say goodbye in the same turn as a question.';
-const SILENCE_NUDGE_MS = 30000; // the caller says nothing this long: the AI thanks them and ends the call (fewer paid seconds)
+const SILENCE_NUDGE_MS = 15000; // after both re-asks the caller still says nothing this long: the AI thanks them and ends the call
 const REASK_MS = 7000; // the AI asked and the caller says nothing this long: the AI asks again (callers do not wait in silence)
 const REASK = 'The caller has not answered for about 7 seconds. Ask your last question again, shorter and clearly, in the caller\'s language. If it was about a booking, keep going with the booking.';
 const REASK_OFFER = 'The caller still has not answered. If a booking is not finished, ask: shall I connect you to the barber, or take a message for the barber? (Offer to connect only if the salon is open now; otherwise offer only the message.) If the booking is done, ask if there is anything else. Then wait for the answer.';
 const OPENING_MAX_MS = 20000; // Twilio never confirmed the opening was played: the caller is heard anyway after this
 const SPEECH_PEAK = 1500; // of 32767: louder than the line's background noise
-const SILENCE_NUDGE = 'The caller has been silent for about 30 seconds. Thank them for calling, say they are welcome to call again to book their appointment, then call end_call. Say it in the caller\'s last language.';
+const SILENCE_NUDGE = 'The caller has not answered at all. Thank them for calling, say they are welcome to call again to book their appointment, then call end_call. Say it in the caller\'s last language.';
 
 export class CallSession {
   private gemini: SocketLike | null = null;
@@ -46,8 +46,8 @@ export class CallSession {
   private timers: unknown[] = [];
   private closed = false;
   private opening = '';
-  private lastSpeechAt = 0;
   private nudged = false;
+  private nudgePending = false; // the AI's next turn answers our re-ask, not the caller
   private aiWaitingSince = 0; // the AI finished a turn and waits for the caller (0: it does not)
   private reasks = 0; // re-asks since the caller last spoke (at most 2)
   private hangUpWhenSaid = false;
@@ -95,6 +95,8 @@ export class CallSession {
     // shortly before the cap the AI wraps up itself, so the call is not cut mid-sentence
     if (max > TIME_WARNING_S * 2) this.timers.push(this.deps.setTimer((max - TIME_WARNING_S) * 1000, () => this.warnTimeLeft()));
     this.variables = o.variableValues ?? {};
+    // the salon's date and time the AI is told (no caller data), to check a wrong "tomorrow"
+    this.deps.log('call_date', { now: String(this.variables.current_local_datetime ?? ''), days: String(this.variables.upcoming_days ?? '').slice(0, 120) });
     this.connectGemini();
   }
 
@@ -142,18 +144,21 @@ export class CallSession {
     if (this.ready && this.gemini && this.openingHeard) {
       const now = this.deps.now().getTime();
       const pcm = mulawToPcm16(Buffer.from(payloadB64, 'base64'));
+      // silence counts only while the AI waits for an answer (never while it thinks, runs a tool or speaks)
       if (peakOf(pcm) > SPEECH_PEAK) {
-        this.lastSpeechAt = now;
         this.aiWaitingSince = 0;
         this.reasks = 0;
       } else if (this.aiWaitingSince && now - this.aiWaitingSince > REASK_MS && this.reasks < 2 && !this.hangUpWhenSaid) {
         this.reasks += 1;
         this.aiWaitingSince = 0;
+        this.nudgePending = true;
         this.deps.log('reask', { n: this.reasks });
         this.gemini.send(JSON.stringify({ clientContent: { turns: [{ role: 'user', parts: [{ text: this.reasks === 1 ? REASK : REASK_OFFER }] }], turnComplete: true } }));
-      } else if (!this.nudged && now - this.lastSpeechAt > SILENCE_NUDGE_MS) {
+      } else if (this.aiWaitingSince && this.reasks >= 2 && !this.nudged && now - this.aiWaitingSince > SILENCE_NUDGE_MS) {
         this.nudged = true;
-        this.deps.log('silence_nudge', { silentSeconds: Math.round((now - this.lastSpeechAt) / 1000) });
+        this.deps.log('silence_nudge', { silentSeconds: Math.round((now - this.aiWaitingSince) / 1000) });
+        this.aiWaitingSince = 0;
+        this.nudgePending = true;
         this.gemini.send(JSON.stringify({ clientContent: { turns: [{ role: 'user', parts: [{ text: SILENCE_NUDGE }] }], turnComplete: true } }));
       }
       this.gemini.send(JSON.stringify({ realtimeInput: { audio: { data: phoneToGemini(payloadB64), mimeType: 'audio/pcm;rate=16000' } } }));
@@ -194,11 +199,15 @@ export class CallSession {
     if (m.setupComplete) {
       this.step('gemini_ready');
       this.ready = true;
-      this.lastSpeechAt = this.deps.now().getTime();
       if (!this.openingHeard) this.askOpening();
     }
     for (const part of m.serverContent?.modelTurn?.parts ?? []) {
-      if (part?.inlineData?.data) { this.aiWaitingSince = 0; this.turnAudio = true; this.openingSpoken = true; }
+      if (part?.inlineData?.data) {
+        this.aiWaitingSince = 0;
+        this.turnAudio = true;
+        this.openingSpoken = true;
+        if (!this.nudgePending) this.reasks = 0; // the AI answers the caller (who may speak too quietly for the meter)
+      }
       if (part?.inlineData?.data && !this.firstAudio) { this.firstAudio = true; this.step('first_audio'); }
       if (part?.inlineData?.data) this.twilio.send(JSON.stringify({ event: 'media', streamSid: this.streamSid, media: { payload: geminiToPhone(part.inlineData.data, part.inlineData.mimeType) } }));
     }
@@ -216,10 +225,10 @@ export class CallSession {
     }
     if (m.serverContent?.turnComplete) {
       this.turnAudio = false;
-      this.lastSpeechAt = this.deps.now().getTime(); // the AI finished: the silence starts now
+      this.nudgePending = false;
       if (!this.hangUpWhenSaid) {
         // Twilio sends the mark back once the audio is played; until then the turn's end counts
-        this.aiWaitingSince = this.lastSpeechAt;
+        this.aiWaitingSince = this.deps.now().getTime(); // the AI finished: the wait for an answer starts now
         this.twilio.send(JSON.stringify({ event: 'mark', streamSid: this.streamSid, mark: { name: 'ai-turn' } }));
       }
       if (this.hangUpWhenSaid) this.timers.push(this.deps.setTimer(HANGUP_DELAY_MS, () => void this.hangUp()));
