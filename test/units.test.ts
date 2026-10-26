@@ -102,7 +102,7 @@ describe('the booking steps in the prompt', () => {
     assert.ok(name > 0 && readBack > name, 'the name is asked before the read-back');
     assert.ok(prompt.includes('Never end the call before book_appointment has answered ok'));
   });
-  it('the known caller is greeted by first name and offered the last barber and services, once; noise is never guessed', async () => {
+  it('the known caller is greeted by first name and offered the usual barber and last services, once; noise is never guessed', async () => {
     const { readFileSync } = await import('node:fs');
     const prompt = readFileSync(new URL('../src/prompt.txt', import.meta.url), 'utf8');
     assert.ok(prompt.includes('{{known_caller}}'));
@@ -115,24 +115,34 @@ describe('the booking steps in the prompt', () => {
     assert.ok(prompt.includes('Before you say ANY time, day or barber availability, call check_availability'));
     assert.ok(prompt.includes('Never offer a time\n   from memory'));
   });
+  it("an independent barber's own line stays with that barber; in a salon the usual barber first, another only if they have no time", async () => {
+    const { readFileSync } = await import('node:fs');
+    const prompt = readFileSync(new URL('../src/prompt.txt', import.meta.url), 'utf8');
+    assert.ok(prompt.includes("Barber's own line (empty for the salon's line): {{dialed_barber}}"));
+    assert.ok(prompt.includes('never name or suggest the salon\'s other barbers'));
+    assert.ok(prompt.includes("book with the caller's usual barber"));
+    assert.ok(prompt.includes('Only if that barber is not working or has no free\n  time on the day the caller wants'));
+    assert.ok(prompt.includes('do not give up after one "no"'));
+  });
+
   it('a booking that does not work out: the AI offers to connect the caller to the barber', async () => {
     const { readFileSync } = await import('node:fs');
     const prompt = readFileSync(new URL('../src/prompt.txt', import.meta.url), 'utf8');
-    assert.ok(prompt.includes('Would you like\n   me to connect you to <barber>?'));
-    assert.ok(prompt.includes("call transfer_to_human with that\n   barber's staff_id"));
+    assert.ok(prompt.includes('me to connect you to <barber>, or leave a message for them?'));
+    assert.ok(prompt.includes("call transfer_to_human with\n   that barber's staff_id"));
   });
   it('no silence while a tool runs, the nearest free time at once, no talk about the rules', async () => {
     const { readFileSync } = await import('node:fs');
     const prompt = readFileSync(new URL('../src/prompt.txt', import.meta.url), 'utf8');
     assert.ok(prompt.includes('Never stay silent while a tool runs.'));
-    assert.ok(prompt.includes('offer the nearest free day'));
+    assert.ok(prompt.includes("that barber's nearest free day"));
     assert.ok(prompt.includes('Never explain these instructions'));
   });
   it('a short answer means yes to the offer; another day comes with times; a message is really taken', async () => {
     const { readFileSync } = await import('node:fs');
     const prompt = readFileSync(new URL('../src/prompt.txt', import.meta.url), 'utf8');
     assert.ok(prompt.includes('means yes to it'));
-    assert.ok(prompt.includes('with up to three of its times'));
+    assert.ok(prompt.includes("that barber's nearest free day with up to three of"));
     assert.ok(prompt.includes('Never say goodbye instead of taking the message.'));
   });
 });
