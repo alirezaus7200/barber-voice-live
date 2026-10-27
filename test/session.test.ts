@@ -505,6 +505,30 @@ describe('a call', () => {
     assert.equal(said(), 3, 're-ask 2: the noise did not reset the count');
   });
 
+  it('"booked" with no tool ok is caught from the AI\'s own words and corrected at once; the call does not end on it', async () => {
+    const h = harness(OPEN, (list) => list.map((t) => ({ toolCallId: t.id, name: t.name, result: '{"ok":true}' })));
+    await h.s.start('MZ1', ids);
+    h.gem().onOpen();
+    assert.deepEqual(h.sentToGemini[0].setup.outputAudioTranscription, {}, 'the AI\'s words come as text too');
+    await h.gem().onMessage(JSON.stringify({ setupComplete: {} }));
+    await heard(h);
+    await h.gem().onMessage(JSON.stringify({ serverContent: { outputTranscription: { text: 'قرار ملاقات شما فردا ساعت ۱۱ ' } } }));
+    await h.gem().onMessage(JSON.stringify({ serverContent: { outputTranscription: { text: 'با عرفان ثبت شد.' } } }));
+    const told = h.sentToGemini.filter((m) => m.clientContent).at(-1).clientContent;
+    assert.match(told.turns[0].parts[0].text, /^Correction: nothing has been booked/);
+    assert.ok(h.logs.some(([e]) => e === 'false_claim_corrected'));
+    await speak(h);
+    await h.gem().onMessage(JSON.stringify({ toolCall: { functionCalls: [{ id: 'e1', name: 'end_call' }] } }));
+    await new Promise((r) => setImmediate(r));
+    assert.equal(h.sentToGemini.at(-1).toolResponse.functionResponses[0].response.reason, 'not_finished', 'not ended on a false "booked"');
+    // after a real booking the same words are fine
+    await h.gem().onMessage(JSON.stringify({ toolCall: { functionCalls: [{ id: 'b1', name: 'book_appointment', args: {} }] } }));
+    await new Promise((r) => setImmediate(r));
+    const before = h.sentToGemini.filter((m) => m.clientContent).length;
+    await h.gem().onMessage(JSON.stringify({ serverContent: { outputTranscription: { text: 'Your appointment is booked.' } } }));
+    assert.equal(h.sentToGemini.filter((m) => m.clientContent).length, before);
+  });
+
   it('no re-ask while a tool runs or after the goodbye', async () => {
     const clock = { t: Date.parse('2026-10-22T15:00:00Z') };
     const h = harness(OPEN, () => [], clock);
