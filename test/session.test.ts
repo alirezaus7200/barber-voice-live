@@ -559,6 +559,42 @@ describe('a call', () => {
     assert.ok(lastToGemini().some((x) => x !== 0), 'after the playback the caller is heard normally');
   });
 
+  it('Gemini drops the line mid-call (1011): connected again, the conversation resumed with its handle; at most twice, then the call ends', async () => {
+    const h = harness(OPEN);
+    await h.s.start('MZ1', ids);
+    h.gem().onOpen();
+    assert.deepEqual(h.sentToGemini[0].setup.sessionResumption, {}, 'resumption asked from the start');
+    await h.gem().onMessage(JSON.stringify({ setupComplete: {} }));
+    await heard(h);
+    await h.gem().onMessage(JSON.stringify({ sessionResumptionUpdate: { newHandle: 'h-1', resumable: true } }));
+    h.sockets[0].onClose(1011);
+    assert.equal(h.sockets.length, 2, 'connected again');
+    assert.equal(h.updates.length, 0, 'the call goes on');
+    h.sockets[1].onOpen();
+    const setup = h.sentToGemini.filter((m) => m.setup).at(-1).setup;
+    assert.deepEqual(setup.sessionResumption, { handle: 'h-1' }, 'the same conversation');
+    await h.sockets[1].onMessage(JSON.stringify({ setupComplete: {} }));
+    assert.ok(!h.sentToGemini.some((m) => m.clientContent?.turns?.[0]?.parts?.[0]?.text?.startsWith('The line dropped')), 'resumed: nothing to explain');
+    assert.deepEqual(h.logs.find(([e]) => e === 'gemini_reconnect'), ['gemini_reconnect', { code: 1011, resumed: true }]);
+    h.sockets[1].onClose(1011);
+    h.sockets[2].onClose(1011);
+    await new Promise((r) => setImmediate(r));
+    assert.equal(h.sockets.length, 3, 'twice at most');
+    assert.equal(h.updates.length, 1, 'then the call ends');
+  });
+
+  it('a drop before any handle: a fresh connection asks the caller to repeat', async () => {
+    const h = harness(OPEN);
+    await h.s.start('MZ1', ids);
+    h.gem().onOpen();
+    await h.gem().onMessage(JSON.stringify({ setupComplete: {} }));
+    await heard(h);
+    h.sockets[0].onClose(1011);
+    h.sockets[1].onOpen();
+    await h.sockets[1].onMessage(JSON.stringify({ setupComplete: {} }));
+    assert.match(h.sentToGemini.filter((m) => m.clientContent).at(-1).clientContent.turns[0].parts[0].text, /^The line dropped.*repeat/s);
+  });
+
   it('no re-ask while a tool runs or after the goodbye', async () => {
     const clock = { t: Date.parse('2026-10-22T15:00:00Z') };
     const h = harness(OPEN, () => [], clock);
