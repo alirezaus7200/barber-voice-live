@@ -24,13 +24,12 @@ export type SessionDeps = {
 };
 
 const TRANSFER_DELAY_MS = 4000; // the AI says "connecting you now" first
-const HANGUP_DELAY_MS = 1500; // after the goodbye is fully said
 const GOODBYE_MAX_MS = 15000; // safety: hang up even if the goodbye never completes
 const TIME_WARNING_S = 40; // seconds before the call cap when the AI is told to wrap up (enough to take a message)
 const TIME_NUDGE = 'About 40 seconds are left in this call. If a booking is not finished, ask the one question still missing, short, and finish it now. If it cannot be finished, ask the caller: shall I connect you to the barber, or take a message for the barber? (Offer to connect them only if the salon is open now; otherwise offer only the message.) Then stop and wait for the answer. If they want a message, take it with take_message, then say a short goodbye in the caller\'s language and call end_call. Never say goodbye in the same turn as a question.';
 const SILENCE_NUDGE_MS = 15000; // after both re-asks the caller still says nothing this long: the AI thanks them and ends the call
-const REASK_MS = 7000; // the AI asked and the caller says nothing this long: the AI asks again (callers do not wait in silence)
-const REASK = 'The caller has not answered for about 7 seconds. Ask your last question again, shorter and clearly, in the caller\'s language. If it was about a booking, keep going with the booking.';
+const REASK_MS = 5000; // the AI asked and the caller says nothing this long: the AI asks again (callers do not wait in silence)
+const REASK = 'The caller has not answered for about 5 seconds. Ask your last question again, shorter and clearly, in the caller\'s language. If it was about a booking, keep going with the booking.';
 const REASK_OFFER = 'The caller still has not answered. If a booking is not finished, ask: shall I connect you to the barber, or take a message for the barber? (Offer to connect only if the salon is open now; otherwise offer only the message.) If the booking is done, ask if there is anything else. Then wait for the answer.';
 const MESSAGE_DONE = 'The message is passed on. Now, in one short answer, tell the caller the barber will get their message and get back to them, then say goodbye (only once in this call), and call end_call.';
 const OPENING_MAX_MS = 20000; // Twilio never confirmed the opening was played: the caller is heard anyway after this
@@ -48,9 +47,9 @@ export class CallSession {
   private closed = false;
   private opening = '';
   private nudged = false;
-  private nudgePending = false;
-  private toolAnsweredAt = 0;
-  private muted = false; // after the goodbye and end_call: no more AI audio for the caller // when the last tool answer went to Gemini, until it speaks again // the AI's next turn answers our re-ask, not the caller
+  private nudgePending = false; // the AI's next turn answers our re-ask, not the caller
+  private toolAnsweredAt = 0; // when the last tool answer went to Gemini, until it speaks again
+  private muted = false; // the goodbye turn is over: no more AI audio for the caller (no second goodbye)
   private aiWaitingSince = 0; // the AI finished a turn and waits for the caller (0: it does not)
   private reasks = 0; // re-asks since the caller last spoke (at most 2)
   private hangUpWhenSaid = false;
@@ -240,7 +239,11 @@ export class CallSession {
         this.aiWaitingSince = this.deps.now().getTime(); // the AI finished: the wait for an answer starts now
         this.twilio.send(JSON.stringify({ event: 'mark', streamSid: this.streamSid, mark: { name: 'ai-turn' } }));
       }
-      if (this.hangUpWhenSaid) this.timers.push(this.deps.setTimer(HANGUP_DELAY_MS, () => void this.hangUp()));
+      if (this.hangUpWhenSaid && !this.muted) {
+        // the goodbye turn is over: nothing more is played; hang up when Twilio has played the goodbye
+        this.muted = true;
+        this.twilio.send(JSON.stringify({ event: 'mark', streamSid: this.streamSid, mark: { name: 'goodbye' } }));
+      }
     }
     // the caller spoke over the AI: drop what Twilio still has queued (never the opening)
     if (m.serverContent?.interrupted && this.openingHeard) this.twilio.send(JSON.stringify({ event: 'clear', streamSid: this.streamSid }));
@@ -279,17 +282,10 @@ export class CallSession {
           continue;
         }
         this.endedReason = 'assistant-ended-call';
-        if (this.turnAudio) {
-          // the goodbye was already said in this turn: nothing more reaches the caller (no second goodbye);
-          // hang up once Twilio has played what is queued
-          this.muted = true;
-          responses.push({ id: c.id, name: c.name, response: { ok: true, note: 'The goodbye was said. Say nothing more.' } });
-          this.twilio.send(JSON.stringify({ event: 'mark', streamSid: this.streamSid, mark: { name: 'goodbye' } }));
-          this.timers.push(this.deps.setTimer(GOODBYE_MAX_MS, () => void this.hangUp()));
-          continue;
-        }
-        responses.push({ id: c.id, name: c.name, response: { ok: true, note: 'Say one short goodbye now, and nothing else.' } });
-        // the goodbye is still being spoken: hang up only after it completes (see fromGemini)
+        // the goodbye may still be streaming (end_call can come mid-sentence): it is never cut; the call ends
+        // once this turn is over and Twilio has played it (see fromGemini and played)
+        const note = this.turnAudio ? 'The goodbye was said. Say nothing more.' : 'Say one short goodbye now, and nothing else.';
+        responses.push({ id: c.id, name: c.name, response: { ok: true, note } });
         this.hangUpWhenSaid = true;
         this.timers.push(this.deps.setTimer(GOODBYE_MAX_MS, () => void this.hangUp()));
         continue;
