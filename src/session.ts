@@ -28,6 +28,8 @@ export type SessionDeps = {
 const TRANSFER_DELAY_MS = 4000; // the AI says "connecting you now" first
 const LANGUAGE_NAMES: Record<string, string> = { en: 'English', es: 'Spanish', fa: 'Persian (Farsi)' };
 const FIRST_SILENCE_NUDGE_MS = 8000; // the caller never spoke: the goodbye comes this long after the one re-ask
+const RECONNECT_CODES = [1001, 1006, 1011, 1013, 1014]; // Gemini went away or failed: not our close, not a refusal
+const RECONNECTED = 'The line dropped for a moment and you missed what the caller said. Apologize in one short sentence, in the caller\'s language, and ask them to repeat it.';
 const ECHO_HOLD_MS = 400; // the echo of the AI's last words still comes back this long after they played
 const BARGE_IN_PEAK = 9000; // of 32767: a caller speaking over the AI, clearly louder than a speakerphone echo
 const WAIT_RESTART_MS = 8000; // the AI has been quiet this long with nothing running: the silence count starts again
@@ -65,6 +67,10 @@ export class CallSession {
   private aiWaitingSince = 0; // the AI finished a turn and waits for the caller (0: it does not)
   private reasks = 0; // re-asks since the AI last answered the caller (at most 2; 1 before the caller ever spoke)
   private talked = false;
+  private plain = false; // the Gemini setting in use (plain after a 1007 at the start)
+  private resumeHandle: string | null = null; // Gemini's latest handle to resume this conversation
+  private reconnects = 0;
+  private reconnecting = false;
   private playbackUntil = 0; // when the AI audio sent to Twilio will have finished playing (ms)
   private turnText = ''; // what the AI said in this turn (transcription)
   private falseClaims = 0; // "booked" with no tool ok: corrected (at most twice a call) // the AI has answered the caller once (a conversation started)
@@ -139,6 +145,7 @@ export class CallSession {
 
   /** One Gemini Live session for this call. If Gemini refuses it at once (1007), it is opened once more. */
   private connectGemini(plain = false) {
+    this.plain = plain;
     this.gemini = this.deps.openGemini({
       onOpen: () => this.gemini?.send(JSON.stringify({
         setup: {
@@ -149,6 +156,8 @@ export class CallSession {
           // the AI's words as text (outputAudioTranscription): to catch a "booked" no tool confirmed
           ...(plain ? {} : { realtimeInputConfig: { automaticActivityDetection: { silenceDurationMs: 600 } }, contextWindowCompression: { slidingWindow: {} }, outputAudioTranscription: {} }),
           systemInstruction: { parts: [{ text: fillPrompt(this.deps.prompt, this.variables) + this.openingNote() }] },
+          // Gemini sends handles to resume this conversation in a new connection (after an internal error)
+          sessionResumption: this.resumeHandle ? { handle: this.resumeHandle } : {},
           tools: geminiTools(),
         },
       })),
@@ -161,6 +170,16 @@ export class CallSession {
           if (!this.openingHeard) this.openingSpoken = false;
           this.deps.log('gemini_retry', { reason: 'refused at start' });
           this.connectGemini(true);
+          return;
+        }
+        // Gemini dropped the connection mid-call (e.g. 1011 "Internal error"): connect again and go on,
+        // with the conversation when Gemini gave a resumption handle; at most twice a call
+        if (RECONNECT_CODES.includes(code ?? 0) && this.reconnects < 2) {
+          this.reconnects++;
+          this.ready = false;
+          this.reconnecting = true;
+          this.deps.log('gemini_reconnect', { code, resumed: Boolean(this.resumeHandle) });
+          this.connectGemini(this.plain);
           return;
         }
         this.endedReason = 'gemini-closed';
@@ -327,9 +346,20 @@ export class CallSession {
     try { m = JSON.parse(text); } catch { return; }
     // Gemini says it will close the session soon (goAway): log why, so a short call can be explained
     if (m.goAway) this.deps.log('gemini_go_away', { timeLeft: String(m.goAway.timeLeft ?? '') });
+    if (m.sessionResumptionUpdate?.resumable && typeof m.sessionResumptionUpdate.newHandle === 'string') {
+      this.resumeHandle = m.sessionResumptionUpdate.newHandle;
+    }
     if (m.setupComplete) {
       this.step('gemini_ready');
       this.ready = true;
+      if (this.reconnecting) {
+        this.reconnecting = false;
+        this.aiWaitingSince = this.deps.now().getTime();
+        // a fresh conversation (no handle): the AI knows only its instructions, so it asks the caller to repeat
+        if (!this.resumeHandle && this.openingHeard) {
+          this.gemini?.send(JSON.stringify({ clientContent: { turns: [{ role: 'user', parts: [{ text: RECONNECTED }] }], turnComplete: true } }));
+        }
+      }
       if (!this.openingHeard) void this.startOpening();
     }
     const said = m.serverContent?.outputTranscription?.text;
