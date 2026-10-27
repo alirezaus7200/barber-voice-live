@@ -26,6 +26,7 @@ export type SessionDeps = {
 };
 
 const TRANSFER_DELAY_MS = 4000; // the AI says "connecting you now" first
+const LANGUAGE_NAMES: Record<string, string> = { en: 'English', es: 'Spanish', fa: 'Persian (Farsi)' };
 const OPENING_AUDIO_WAIT_MS = 4000; // the ready-made opening is late: Gemini says it instead
 const GOODBYE_MAX_MS = 15000; // safety: hang up even if the goodbye never completes
 const TIME_WARNING_S = 40; // seconds before the call cap when the AI is told to wrap up (enough to take a message)
@@ -219,6 +220,16 @@ export class CallSession {
     } }));
   }
 
+  /** The caller's language, fixed by barber-core (set_caller_language): told to Gemini without asking it to speak. */
+  private lockLanguage(code: string) {
+    const name = LANGUAGE_NAMES[code.split('-')[0]] ?? code;
+    this.deps.log('language_locked', { language: code });
+    this.gemini?.send(JSON.stringify({ clientContent: {
+      turns: [{ role: 'user', parts: [{ text: `The caller speaks ${name}. From now on listen for ${name} and answer only in ${name}, unless the caller clearly switches to another language.` }] }],
+      turnComplete: false,
+    } }));
+  }
+
   /** Start-up timing: how long after Twilio's start each step came (the caller hears nothing until first_audio). */
   private step(name: string) {
     this.deps.log('start_timing', { step: name, ms: this.deps.now().getTime() - this.t0, retried: this.retried });
@@ -338,6 +349,8 @@ export class CallSession {
       try { if (raw) result = JSON.parse(raw); } catch { /* keep system_error */ }
       this.deps.log('tool_result', { tool: c.name, ok: result?.ok === true });
       if (result?.ok === true && ['book_appointment', 'take_message', 'transfer_to_human', 'cancel_appointment', 'reschedule_appointment'].includes(c.name)) this.outcome = true;
+      // the call's language is fixed: Gemini listens for it and answers only in it from now on
+      if (c.name === 'set_caller_language' && result?.ok === true && typeof result.language === 'string') this.lockLanguage(result.language);
       // a message is passed on: only now the caller hears so, then one goodbye (never a goodbye first)
       if (c.name === 'take_message' && result?.ok === true && !calls.some((x) => x.name === 'end_call')) result = { ...result, next: MESSAGE_DONE };
       responses.push({ id: c.id, name: c.name, response: result });

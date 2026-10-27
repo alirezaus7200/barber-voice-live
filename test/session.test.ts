@@ -382,6 +382,25 @@ describe('a call', () => {
     assert.equal(h.updates.length, 1, 'hung up once the goodbye was played');
   });
 
+  it('the caller\'s language from barber-core is fixed for Gemini (no answer asked for); a refused language changes nothing', async () => {
+    const h = harness(OPEN, (list) => list.map((t) => ({ toolCallId: t.id, name: t.name,
+      result: t.args.language === 'fa-IR' ? '{"ok":true,"language":"fa-IR","saved":true}' : '{"ok":false,"reason":"unsupported_language"}' })));
+    await h.s.start('MZ1', ids);
+    h.gem().onOpen();
+    await h.gem().onMessage(JSON.stringify({ setupComplete: {} }));
+    await speak(h);
+    await h.gem().onMessage(JSON.stringify({ toolCall: { functionCalls: [{ id: 'l1', name: 'set_caller_language', args: { language: 'fa-IR', how: 'detected' } }] } }));
+    await new Promise((r) => setImmediate(r));
+    const told = h.sentToGemini.filter((m) => m.clientContent).at(-1).clientContent;
+    assert.equal(told.turnComplete, false);
+    assert.match(told.turns[0].parts[0].text, /speaks Persian \(Farsi\).*answer only in Persian/s);
+    assert.deepEqual(h.logs.find(([e]) => e === 'language_locked'), ['language_locked', { language: 'fa-IR' }]);
+    const before = h.sentToGemini.filter((m) => m.clientContent).length;
+    await h.gem().onMessage(JSON.stringify({ toolCall: { functionCalls: [{ id: 'l2', name: 'set_caller_language', args: { language: 'fr' } }] } }));
+    await new Promise((r) => setImmediate(r));
+    assert.equal(h.sentToGemini.filter((m) => m.clientContent).length, before);
+  });
+
   it('no re-ask while a tool runs or after the goodbye', async () => {
     const clock = { t: Date.parse('2026-10-22T15:00:00Z') };
     const h = harness(OPEN, () => [], clock);

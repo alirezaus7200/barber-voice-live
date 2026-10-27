@@ -55,6 +55,15 @@ export const CORE_TOOLS = [
     parameters: { type: 'object', properties: { language } },
   },
   {
+    name: 'set_caller_language',
+    description: 'Call once as soon as you know the caller\'s language (from their first words, or after asking once), and again only if they clearly switch. how: chose = they said which language, detected = you heard it.',
+    parameters: {
+      type: 'object',
+      properties: { language, how: { type: 'string', enum: ['chose', 'detected'] } },
+      required: ['language'],
+    },
+  },
+  {
     name: 'take_message',
     description: 'Leaves a message for the salon. Use it whenever you cannot help, nobody can take a transfer, or a tool fails.',
     parameters: {
