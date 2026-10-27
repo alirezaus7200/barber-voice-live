@@ -152,3 +152,29 @@ describe('the booking steps in the prompt', () => {
     assert.ok(prompt.includes('Say goodbye only once in\na call, as your very last words'));
   });
 });
+
+describe('the ready-made opening (Gemini text-to-speech)', () => {
+  it('one request with the voice; phone audio (mu-law 8 kHz); kept in memory; a failure is null and never shows the key', async () => {
+    const { openingSpeaker } = await import('../src/tts.ts');
+    const calls: any[] = [];
+    const pcm24k = Buffer.alloc(24000 * 2); // 1 s of silence at 24 kHz
+    const ok = async (url: string, init: any) => {
+      calls.push({ url, init });
+      return { ok: true, status: 200, json: async () => ({ candidates: [{ content: { parts: [{ inlineData: { mimeType: 'audio/L16;codec=pcm;rate=24000', data: pcm24k.toString('base64') } }] } }] }) };
+    };
+    const logs: any[] = [];
+    const speak = openingSpeaker({ apiKey: 'KEY-123', voice: 'Kore', fetch: ok, log: (e, d) => logs.push([e, d]) });
+    const a = await speak('You called Test Salon. This call may be recorded.');
+    assert.equal(Buffer.from(a!, 'base64').length, 8000, '1 s at 8 kHz, one byte a sample');
+    assert.equal(calls[0].init.headers['x-goog-api-key'], 'KEY-123');
+    assert.doesNotMatch(calls[0].url, /KEY-123/, 'the key is never in the URL');
+    assert.equal(JSON.parse(calls[0].init.body).generationConfig.speechConfig.voiceConfig.prebuiltVoiceConfig.voiceName, 'Kore');
+    assert.match(JSON.parse(calls[0].init.body).contents[0].parts[0].text, /You called Test Salon\. This call may be recorded\.$/);
+    await speak('You called Test Salon. This call may be recorded.');
+    assert.equal(calls.length, 1, 'the second call uses the copy in memory');
+    const bad = openingSpeaker({ apiKey: 'KEY-123', voice: 'Kore', log: (e, d) => logs.push([e, d]),
+      fetch: async () => ({ ok: false, status: 403, json: async () => ({ error: { message: 'key KEY-123 not valid' } }) }) });
+    assert.equal(await bad('x'), null);
+    assert.doesNotMatch(JSON.stringify(logs), /KEY-123/);
+  });
+});

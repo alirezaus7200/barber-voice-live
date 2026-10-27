@@ -8,11 +8,14 @@ import { coreClient } from './core.ts';
 import { CallSession } from './session.ts';
 import { streamToken, streamTwiml, updateCall, validStreamToken, validTwilioRequest } from './twilio.ts';
 import { loadConfig } from './config.ts';
+import { openingSpeaker } from './tts.ts';
 
 const cfg = loadConfig(process.env);
 const prompt = readFileSync(new URL('./prompt.txt', import.meta.url), 'utf8');
 const core = coreClient({ url: cfg.coreWebhookUrl, secret: cfg.coreWebhookSecret });
 const log = (event: string, data: Record<string, unknown>) => console.error(JSON.stringify({ event, ...data }));
+// the opening as ready-made audio in the call's voice (word for word; kept in memory)
+const speak = openingSpeaker({ apiKey: cfg.geminiApiKey, voice: cfg.geminiVoice, model: process.env.GEMINI_TTS_MODEL?.trim() || undefined, log });
 const E164 = /^\+[1-9]\d{7,14}$/;
 
 const readBody = (req: IncomingMessage) => new Promise<string>((resolve, reject) => {
@@ -56,7 +59,7 @@ wss.on('connection', (twilio) => {
       // only a stream we started for a Twilio-signed call is accepted
       if (!validStreamToken(cfg.streamSecret, p, c.token, Date.now())) { log('stream_token_rejected', {}); twilio.close(); return; }
       session = new CallSession({
-        core, prompt, model: cfg.geminiModel, voice: cfg.geminiVoice, log,
+        core, prompt, model: cfg.geminiModel, voice: cfg.geminiVoice, log, speak,
         now: () => new Date(),
         setTimer: (ms, fn) => setTimeout(fn, ms), clearTimer: (t) => clearTimeout(t as NodeJS.Timeout),
         updateCall: (callSid, twiml) => updateCall({ accountSid: cfg.twilioAccountSid, authToken: cfg.twilioAuthToken, callSid, twiml }),
