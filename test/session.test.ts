@@ -257,8 +257,9 @@ describe('a call', () => {
     clock.t += 8000; h.s.fromCaller(silent);
     assert.equal(said().length, 3, 'at most 2 re-asks; then the 30 s silence rule ends the call');
     assert.deepEqual(h.logs.filter(([e]) => e === 'reask'), [['reask', { n: 1 }], ['reask', { n: 2 }]]);
-    // the caller answers: the count starts again
+    // the caller answers and the AI answers them: the count starts again
     h.s.fromCaller(loud);
+    await speak(h);
     await h.gem().onMessage(JSON.stringify({ serverContent: { turnComplete: true } }));
     clock.t += 8000; h.s.fromCaller(silent);
     assert.equal(said().length, 4);
@@ -427,6 +428,27 @@ describe('a call', () => {
     fallback.fn();
     await new Promise((r) => setImmediate(r));
     assert.equal(h.updates.length, 1);
+  });
+
+  it('a wait that was never counted (the AI cut off, no turn end) starts again once the AI and the caller are quiet; noise never resets the re-asks', async () => {
+    const clock = { t: Date.parse('2026-10-22T15:00:00Z') };
+    const h = harness(OPEN, () => [], clock);
+    await h.s.start('MZ1', ids);
+    h.gem().onOpen();
+    await h.gem().onMessage(JSON.stringify({ setupComplete: {} }));
+    await heard(h);
+    const silent = Buffer.alloc(160, 0xff).toString('base64');
+    const loud = Buffer.alloc(160, 0x00).toString('base64');
+    const said = () => h.sentToGemini.filter((m) => m.clientContent).length;
+    clock.t += 6000; h.s.fromCaller(silent); // re-ask 1
+    await speak(h); // the AI starts it, then is cut off (no turnComplete)
+    clock.t += 1000; h.s.fromCaller(loud); // echo or noise
+    clock.t += 5000; h.s.fromCaller(silent);
+    assert.equal(said(), 2, 'nothing counted yet: the AI spoke 6 s ago');
+    clock.t += 4000; h.s.fromCaller(silent);
+    assert.ok(h.logs.some(([e]) => e === 'wait_restarted'));
+    clock.t += 6000; h.s.fromCaller(silent);
+    assert.equal(said(), 3, 're-ask 2: the noise did not reset the count');
   });
 
   it('no re-ask while a tool runs or after the goodbye', async () => {
