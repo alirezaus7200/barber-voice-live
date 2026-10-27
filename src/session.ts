@@ -47,7 +47,7 @@ const REASK = 'The caller has not answered for about 5 seconds. Say out loud now
 const REASK_OFFER = 'The caller still has not answered. Ask one short question only, nothing else: if a booking is not finished, "Shall I connect you to the barber, or leave a message for them?" (offer to connect only if the salon is open now; otherwise only the message); if the booking is done, "Anything else?"; otherwise just "How can I help you?" again. Then wait for the answer.';
 const MESSAGE_DONE = 'The message is passed on. If you have not told the caller yet, tell them in one short answer that the barber will get their message and get back to them, and say goodbye. If you already said it, say nothing more. Then call end_call.';
 const OPENING_MAX_MS = 20000; // Twilio never confirmed the opening was played: the caller is heard anyway after this
-const SPEECH_PEAK = 1500; // of 32767: louder than the line's background noise
+const SPEECH_PEAK = 700; // of 32767: a voice, even on a speakerphone (quieter than a handset); above the line's hiss
 const SILENCE_NUDGE = 'The caller has not answered at all. Thank them for calling, say they are welcome to call again to book their appointment, then call end_call. Say it in the caller\'s last language.';
 
 export class CallSession {

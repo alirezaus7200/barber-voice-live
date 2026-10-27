@@ -612,6 +612,18 @@ describe('a call', () => {
     assert.ok(!h.logs.some(([e]) => e === 'reask'), 'the caller answered: no re-ask');
   });
 
+  it('a speakerphone voice (quieter than a handset) still counts as the caller speaking: no re-ask over it', async () => {
+    const clock = { t: Date.parse('2026-10-22T15:00:00Z') };
+    const h = harness(OPEN, () => [], clock);
+    await h.s.start('MZ1', ids);
+    h.gem().onOpen();
+    await h.gem().onMessage(JSON.stringify({ setupComplete: {} }));
+    await heard(h);
+    const level = (v: number) => { const b = Buffer.alloc(320); for (let i = 0; i < 160; i++) b.writeInt16LE(i % 2 ? v : -v, i * 2); return pcm16ToMulaw(b).toString('base64'); };
+    for (let i = 0; i < 6; i++) { clock.t += 1000; h.s.fromCaller(level(1000)); } // 6 s of a quiet "I'd like an appointment"
+    assert.ok(!h.logs.some(([e]) => e === 'reask'), 'no re-ask while the caller speaks');
+  });
+
   it('no re-ask while a tool runs or after the goodbye', async () => {
     const clock = { t: Date.parse('2026-10-22T15:00:00Z') };
     const h = harness(OPEN, () => [], clock);
