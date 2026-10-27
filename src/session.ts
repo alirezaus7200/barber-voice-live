@@ -120,7 +120,7 @@ export class CallSession {
           // a short pause before the AI answers; default sensitivity so a quiet caller is heard
           // the plain setting is the retry after Gemini refused the full one (1007)
           ...(plain ? {} : { realtimeInputConfig: { automaticActivityDetection: { silenceDurationMs: 600 } }, contextWindowCompression: { slidingWindow: {} } }),
-          systemInstruction: { parts: [{ text: fillPrompt(this.deps.prompt, this.variables) }] },
+          systemInstruction: { parts: [{ text: fillPrompt(this.deps.prompt, this.variables) + this.openingNote() }] },
           tools: geminiTools(),
         },
       })),
@@ -203,12 +203,9 @@ export class CallSession {
         }));
         this.deps.log('opening_played', { source: 'tts' });
       }
-      // Gemini knows the caller heard it, and waits for them (no answer now)
+      // Gemini knows from its instructions that the phone plays the opening: nothing is sent to it now
+      // (a text turn here was answered as if the caller had spoken)
       this.openingSpoken = true;
-      this.gemini.send(JSON.stringify({ clientContent: {
-        turns: [{ role: 'user', parts: [{ text: `The call has started. The caller has already heard your opening: "${this.opening}". Do not say it again. Wait for the caller, then help them.` }] }],
-        turnComplete: false,
-      } }));
       return;
     }
     this.askOpening();
@@ -224,14 +221,18 @@ export class CallSession {
     } }));
   }
 
-  /** The caller's language, fixed by barber-core (set_caller_language): told to Gemini without asking it to speak. */
-  private lockLanguage(code: string) {
+  /** With a ready-made opening the phone plays it, not Gemini (added to its instructions at the start). */
+  private openingNote(): string {
+    if (!this.deps.speak || !this.opening) return '';
+    return `\n\n# The opening is played for you\nThe phone system plays your opening to the caller, word for word: "${this.opening}". `
+      + 'Never say it yourself, unless an instruction tells you "Say exactly this". After it, wait for the caller to speak.';
+  }
+
+  /** The caller's language, fixed by barber-core (set_caller_language): told to Gemini in the tool's answer. */
+  private languageNote(code: string): string {
     const name = LANGUAGE_NAMES[code.split('-')[0]] ?? code;
     this.deps.log('language_locked', { language: code });
-    this.gemini?.send(JSON.stringify({ clientContent: {
-      turns: [{ role: 'user', parts: [{ text: `The caller speaks ${name}. From now on listen for ${name} and answer only in ${name}, unless the caller clearly switches to another language.` }] }],
-      turnComplete: false,
-    } }));
+    return `The caller speaks ${name}. From now on listen for ${name} and answer only in ${name}, unless the caller clearly switches to another language.`;
   }
 
   /** Start-up timing: how long after Twilio's start each step came (the caller hears nothing until first_audio). */
@@ -354,7 +355,7 @@ export class CallSession {
       this.deps.log('tool_result', { tool: c.name, ok: result?.ok === true });
       if (result?.ok === true && ['book_appointment', 'take_message', 'transfer_to_human', 'cancel_appointment', 'reschedule_appointment'].includes(c.name)) this.outcome = true;
       // the call's language is fixed: Gemini listens for it and answers only in it from now on
-      if (c.name === 'set_caller_language' && result?.ok === true && typeof result.language === 'string') this.lockLanguage(result.language);
+      if (c.name === 'set_caller_language' && result?.ok === true && typeof result.language === 'string') result = { ...result, next: this.languageNote(result.language) };
       // a message is passed on: only now the caller hears so, then one goodbye (never a goodbye first)
       if (c.name === 'take_message' && result?.ok === true && !calls.some((x) => x.name === 'end_call')) result = { ...result, next: MESSAGE_DONE };
       responses.push({ id: c.id, name: c.name, response: result });

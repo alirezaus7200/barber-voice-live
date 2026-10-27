@@ -279,7 +279,7 @@ describe('a call', () => {
     ]);
   });
 
-  it('the opening is our ready-made audio, word for word: played first, Gemini only told; the caller is heard after it', async () => {
+  it('the opening is our ready-made audio, word for word: played first; Gemini knows from its instructions and gets no turn; the caller is heard after it', async () => {
     const asked: string[] = [];
     const audio = Buffer.alloc(16000, 0x7f).toString('base64'); // 2 s of mu-law
     const h = harness(OPEN, () => [], undefined, async (text) => { asked.push(text); return audio; });
@@ -291,10 +291,8 @@ describe('a call', () => {
     const media = h.sentToTwilio.filter((m) => m.event === 'media');
     assert.equal(media.map((m) => m.media.payload).join(''), audio, 'the whole opening, in order');
     assert.deepEqual(h.sentToTwilio.at(-1), { event: 'mark', streamSid: 'MZ1', mark: { name: 'opening' } });
-    const told = h.sentToGemini.filter((m) => m.clientContent);
-    assert.equal(told.length, 1);
-    assert.equal(told[0].clientContent.turnComplete, false, 'Gemini does not answer now');
-    assert.match(told[0].clientContent.turns[0].parts[0].text, /already heard your opening.*این تماس ممکن است ضبط شود.*Do not say it again/s);
+    assert.equal(h.sentToGemini.filter((m) => m.clientContent).length, 0, 'no text turn: it was answered as if the caller had spoken');
+    assert.match(h.sentToGemini[0].setup.systemInstruction.parts[0].text, /phone system plays your opening.*این تماس ممکن است ضبط شود.*Never say it yourself/s);
     h.s.fromCaller(pcm16ToMulaw(Buffer.alloc(160, 0x7f)).toString('base64'));
     assert.equal(h.sentToGemini.filter((m) => m.realtimeInput).length, 0, 'not while it plays');
     h.s.played('opening');
@@ -398,14 +396,14 @@ describe('a call', () => {
     await speak(h);
     await h.gem().onMessage(JSON.stringify({ toolCall: { functionCalls: [{ id: 'l1', name: 'set_caller_language', args: { language: 'fa-IR', how: 'detected' } }] } }));
     await new Promise((r) => setImmediate(r));
-    const told = h.sentToGemini.filter((m) => m.clientContent).at(-1).clientContent;
-    assert.equal(told.turnComplete, false);
-    assert.match(told.turns[0].parts[0].text, /speaks Persian \(Farsi\).*answer only in Persian/s);
+    const answer = h.sentToGemini.at(-1).toolResponse.functionResponses[0].response;
+    assert.equal(answer.ok, true);
+    assert.match(answer.next, /speaks Persian \(Farsi\).*answer only in Persian/s, 'told in the tool answer, not as a separate turn');
     assert.deepEqual(h.logs.find(([e]) => e === 'language_locked'), ['language_locked', { language: 'fa-IR' }]);
-    const before = h.sentToGemini.filter((m) => m.clientContent).length;
     await h.gem().onMessage(JSON.stringify({ toolCall: { functionCalls: [{ id: 'l2', name: 'set_caller_language', args: { language: 'fr' } }] } }));
     await new Promise((r) => setImmediate(r));
-    assert.equal(h.sentToGemini.filter((m) => m.clientContent).length, before);
+    assert.equal(h.sentToGemini.at(-1).toolResponse.functionResponses[0].response.next, undefined);
+    assert.equal(h.logs.filter(([e]) => e === 'language_locked').length, 1);
   });
 
   it('no re-ask while a tool runs or after the goodbye', async () => {
