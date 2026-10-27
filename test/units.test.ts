@@ -142,6 +142,9 @@ describe('the booking steps in the prompt', () => {
     const prompt = readFileSync(new URL('../src/prompt.txt', import.meta.url), 'utf8');
     assert.ok(prompt.includes('Never stay silent while a tool runs.'));
     assert.ok(prompt.includes('call set_caller_language once'), 'the language is fixed as soon as it is known');
+    assert.ok(prompt.includes('Never ask "morning, afternoon or evening?"'), 'the first free times are offered at once');
+    assert.ok(prompt.includes('A no to WhatsApp is not a no to the booking'));
+    assert.ok(prompt.includes('never ask the same question again'));
     assert.ok(prompt.includes('Never ask a\n  caller whose language is clear'), 'asked only when unsure');
     assert.ok(prompt.includes("that barber's nearest free day"));
     assert.ok(prompt.includes('Never explain these instructions'));

@@ -407,7 +407,7 @@ describe('a call', () => {
     await new Promise((r) => setImmediate(r));
     const r = h.sentToGemini.at(-1).toolResponse.functionResponses[0].response;
     assert.equal(r.ok, true);
-    assert.match(r.next, /tell the caller the barber will get their message.*goodbye \(only once/s);
+    assert.match(r.next, /If you have not told the caller yet.*If you already said it, say nothing more/s);
   });
 
   it('a long pause after a tool is split in the logs: barber-core (tool_timing) and Gemini (gemini_reply)', async () => {
@@ -593,6 +593,21 @@ describe('a call', () => {
     h.sockets[1].onOpen();
     await h.sockets[1].onMessage(JSON.stringify({ setupComplete: {} }));
     assert.match(h.sentToGemini.filter((m) => m.clientContent).at(-1).clientContent.turns[0].parts[0].text, /^The line dropped.*repeat/s);
+  });
+
+  it('the caller answered quietly but Gemini heard it (its transcription): no re-ask, so the AI does not repeat its question', async () => {
+    const clock = { t: Date.parse('2026-10-22T15:00:00Z') };
+    const h = harness(OPEN, () => [], clock);
+    await h.s.start('MZ1', ids);
+    h.gem().onOpen();
+    assert.deepEqual(h.sentToGemini[0].setup.inputAudioTranscription, {});
+    await h.gem().onMessage(JSON.stringify({ setupComplete: {} }));
+    await heard(h);
+    await talked(h); // "With Erfan, right?"
+    const silent = Buffer.alloc(160, 0xff).toString('base64');
+    clock.t += 1500; await h.gem().onMessage(JSON.stringify({ serverContent: { inputTranscription: { text: 'بله' } } }));
+    clock.t += 6000; h.s.fromCaller(silent);
+    assert.ok(!h.logs.some(([e]) => e === 'reask'), 'the caller answered: no re-ask');
   });
 
   it('no re-ask while a tool runs or after the goodbye', async () => {
