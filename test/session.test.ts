@@ -247,10 +247,10 @@ describe('a call', () => {
     clock.t += 4000; h.s.fromCaller(silent);
     assert.equal(said().length, 1, 'only 4 s since the question was heard');
     clock.t += 2000; h.s.fromCaller(silent);
-    assert.match(said()[1], /5 seconds.*Say only your last question again.*never say they have not answered/s);
-    clock.t += 8000; h.s.fromCaller(silent);
-    assert.equal(said().length, 2, 'the AI has not said the re-ask yet: no second one');
-    await h.gem().onMessage(JSON.stringify({ serverContent: { turnComplete: true } }));
+    assert.match(said()[1], /5 seconds.*Say out loud now only your last question again.*never say they have not answered/s);
+    clock.t += 3000; h.s.fromCaller(silent);
+    assert.equal(said().length, 2, 'only 3 s after the re-ask');
+    await speak(h); await h.gem().onMessage(JSON.stringify({ serverContent: { turnComplete: true } }));
     clock.t += 8000; h.s.fromCaller(silent);
     assert.match(said()[2], /one short question only.*connect you to the barber, or leave a message.*only if the salon is open/s);
     await h.gem().onMessage(JSON.stringify({ serverContent: { turnComplete: true } }));
@@ -404,6 +404,29 @@ describe('a call', () => {
     await new Promise((r) => setImmediate(r));
     assert.equal(h.sentToGemini.at(-1).toolResponse.functionResponses[0].response.next, undefined);
     assert.equal(h.logs.filter(([e]) => e === 'language_locked').length, 1);
+  });
+
+  it('Gemini says nothing to a re-ask: the next step still comes, then the goodbye and the hang-up (never a silent line)', async () => {
+    const clock = { t: Date.parse('2026-10-22T15:00:00Z') };
+    const h = harness(OPEN, () => [], clock);
+    await h.s.start('MZ1', ids);
+    h.gem().onOpen();
+    await h.gem().onMessage(JSON.stringify({ setupComplete: {} }));
+    await heard(h);
+    const silent = Buffer.alloc(160, 0xff).toString('base64');
+    const said = () => h.sentToGemini.filter((m) => m.clientContent).length;
+    clock.t += 6000; h.s.fromCaller(silent);
+    assert.equal(said(), 2, 're-ask 1');
+    clock.t += 6000; h.s.fromCaller(silent);
+    assert.equal(said(), 3, 're-ask 2, though Gemini said nothing');
+    assert.ok(h.logs.some(([e]) => e === 'nudge_unanswered'));
+    clock.t += 16000; h.s.fromCaller(silent);
+    assert.equal(said(), 4, 'the goodbye');
+    const fallback = h.timers.at(-1)!;
+    assert.equal(fallback.ms, 15_000, 'hung up even if Gemini never says it');
+    fallback.fn();
+    await new Promise((r) => setImmediate(r));
+    assert.equal(h.updates.length, 1);
   });
 
   it('no re-ask while a tool runs or after the goodbye', async () => {
