@@ -540,7 +540,7 @@ describe('a call', () => {
     assert.equal(h.sentToGemini.filter((m) => m.clientContent).length, before);
   });
 
-  it('speakerphone echo: while the AI\'s words play (and 0.4 s after), a quieter sound reaches Gemini as silence; a clear voice still gets through', async () => {
+  it('speakerphone echo: while the AI\'s words play (and 0.4 s after), a quieter sound reaches Gemini turned far down (never zeros); a clear voice still gets through', async () => {
     const clock = { t: Date.parse('2026-10-22T15:00:00Z') };
     const h = harness(OPEN, () => [], clock);
     await h.s.start('MZ1', ids);
@@ -552,7 +552,9 @@ describe('a call', () => {
     // the AI says 1 s (24 kHz PCM: 48000 bytes)
     await h.gem().onMessage(JSON.stringify({ serverContent: { modelTurn: { parts: [{ inlineData: { mimeType: 'audio/pcm;rate=24000', data: Buffer.alloc(48000, 0x10).toString('base64') } }] } } }));
     clock.t += 500; h.s.fromCaller(level(4000)); // its echo
-    assert.ok(lastToGemini().every((x) => x === 0), 'the echo reaches Gemini as silence');
+    const echo = lastToGemini();
+    const peak = (b: Buffer) => { let m = 0; for (let i = 0; i + 1 < b.length; i += 2) m = Math.max(m, Math.abs(b.readInt16LE(i))); return m; };
+    assert.ok(peak(echo) > 0 && peak(echo) < 400, 'the echo reaches Gemini turned far down, never as digital zeros');
     clock.t += 200; h.s.fromCaller(level(20000)); // the caller speaks over it
     assert.ok(lastToGemini().some((x) => x !== 0), 'a clear voice gets through');
     clock.t += 1000; h.s.fromCaller(level(4000)); // 1.7 s: played and 0.4 s later

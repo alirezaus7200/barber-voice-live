@@ -2,7 +2,7 @@
 // for everything about the salon. Gemini hears and speaks every language itself, so the caller may
 // switch language at any time. The salon, the caller and the call id come from Twilio (signed), never
 // from what anyone says. Timers and sockets are passed in, so the whole flow runs in tests.
-import { geminiToPhone, mulawToPcm16, phoneToGemini } from './audio.ts';
+import { geminiToPhone, mulawToPcm16, pcm16ToMulaw, phoneToGemini } from './audio.ts';
 import { fillPrompt, type CallIds, type CoreClient } from './core.ts';
 import { CORE_TOOL_NAMES, geminiTools } from './tools.ts';
 import { dialTwiml, hangupTwiml, sayTwiml } from './twilio.ts';
@@ -203,11 +203,14 @@ export class CallSession {
       const now = this.deps.now().getTime();
       let pcm = mulawToPcm16(Buffer.from(payloadB64, 'base64'));
       // speakerphone echo: while the AI's words still play at the caller (and a moment after), only a voice
-      // clearly louder than the echo gets through; the rest reaches Gemini as silence, so the AI does not
-      // hear itself, stop and start its sentence again
+      // clearly louder than the echo gets through; the rest is turned down about 24 dB, so the AI does not
+      // hear itself, stop and start its sentence again. Turned down, never digital zeros: a stream of
+      // exact zeros is not what a phone line sends (Gemini failed with 1011 "Internal error" on it)
       if (now < this.playbackUntil + ECHO_HOLD_MS && peakOf(pcm) < BARGE_IN_PEAK) {
-        payloadB64 = Buffer.alloc(Buffer.from(payloadB64, 'base64').length, 0xff).toString('base64');
-        pcm = mulawToPcm16(Buffer.from(payloadB64, 'base64'));
+        const quiet = Buffer.alloc(pcm.length);
+        for (let i = 0; i + 1 < pcm.length; i += 2) quiet.writeInt16LE(Math.trunc(pcm.readInt16LE(i) / 16), i);
+        pcm = quiet;
+        payloadB64 = pcm16ToMulaw(quiet).toString('base64');
       }
       // silence counts only while the AI waits for an answer (never while it thinks, runs a tool or speaks)
       // the AI is quiet, no tool runs and the caller is quiet, but no wait is counted (e.g. the AI was cut
