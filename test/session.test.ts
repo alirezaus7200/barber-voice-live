@@ -16,7 +16,8 @@ function harness(startAnswer: any, toolAnswer: (list: any[]) => any[] = () => []
   const sockets: any[] = [];
   const deps: SessionDeps = {
     core: {
-      start: async (c: any) => { core.push(['start', c]); return startAnswer; },
+      start: async (c: any, voice?: string) => { core.push(['start', c]); if (voice) core.push(['voice', voice]); return startAnswer; },
+      saveOpening: async (c: any, x: any) => { core.push(['saveOpening', x]); return { ok: true }; },
       tools: async (c: any, list: any[]) => { core.push(['tools', list]); return toolAnswer(list); },
       end: async (c: any, x: any) => { core.push(['end', x]); return {}; },
     } as any,
@@ -306,6 +307,26 @@ describe('a call', () => {
     await h.sockets[1].onMessage(JSON.stringify({ setupComplete: {} }));
     await new Promise((r) => setImmediate(r));
     assert.equal(h.sentToTwilio.filter((m) => m.event === 'media').length, media.length, 'not played again');
+  });
+
+  it('the opening audio is asked from barber-core with the voice; stored audio plays without text-to-speech; new audio is kept there', async () => {
+    let made = 0;
+    const stored = Buffer.alloc(8000, 0x7f).toString('base64');
+    const h = harness({ ...OPEN, openingAudio: stored }, () => [], undefined, async () => { made++; return 'x'; });
+    await h.s.start('MZ1', ids);
+    assert.deepEqual(h.core[1], ['voice', 'Kore'], 'barber-core is told the voice');
+    h.gem().onOpen();
+    await h.gem().onMessage(JSON.stringify({ setupComplete: {} }));
+    await new Promise((r) => setImmediate(r));
+    assert.equal(made, 0, 'no text-to-speech: barber-core had it');
+    assert.equal(h.sentToTwilio.filter((m) => m.event === 'media').map((m) => m.media.payload).join(''), stored);
+    // a salon without stored audio: made once and kept in barber-core
+    const fresh = Buffer.alloc(8000, 0x7e).toString('base64');
+    const h2 = harness(OPEN, () => [], undefined, async () => fresh);
+    await h2.s.start('MZ1', ids);
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+    assert.deepEqual(h2.core.find(([k]) => k === 'saveOpening'), ['saveOpening', { voice: 'Kore', text: OPEN.assistantOverrides.firstMessage, audio: fresh }]);
   });
 
   it('no ready-made opening (TTS failed): Gemini says it, as before', async () => {

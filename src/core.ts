@@ -27,7 +27,9 @@ export function coreClient(o: { url: string; secret: string; fetch?: typeof fetc
   const call = (c: CallIds) => ({ call: { id: c.callId }, phoneNumber: { number: c.to }, customer: { number: c.from } });
   return {
     /** The salon's opening, facts for the prompt and call length; or `error` (say it and hang up) / `destination` (AI off: forward). */
-    start: (c: CallIds) => send({ type: 'assistant-request', ...call(c) }),
+    start: (c: CallIds, voice?: string) => send({ type: 'assistant-request', ...call(c), ...(voice ? { voice } : {}) }),
+    /** Keeps the opening's ready-made audio in barber-core for the next calls (only a real opening is kept). */
+    saveOpening: (c: CallIds, x: { voice: string; text: string; audio: string }) => send({ type: 'opening-audio', ...call(c), ...x }),
     /** Runs the tools; answers [{ toolCallId, name, result (JSON string) }]. */
     tools: async (c: CallIds, list: { id: string; name: string; args: unknown }[]) => {
       const r = await send({
