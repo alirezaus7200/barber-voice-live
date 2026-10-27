@@ -540,27 +540,6 @@ describe('a call', () => {
     assert.equal(h.sentToGemini.filter((m) => m.clientContent).length, before);
   });
 
-  it('speakerphone echo: while the AI\'s words play (and 0.4 s after), a quieter sound reaches Gemini turned far down (never zeros); a clear voice still gets through', async () => {
-    const clock = { t: Date.parse('2026-10-22T15:00:00Z') };
-    const h = harness(OPEN, () => [], clock);
-    await h.s.start('MZ1', ids);
-    h.gem().onOpen();
-    await h.gem().onMessage(JSON.stringify({ setupComplete: {} }));
-    await heard(h);
-    const level = (v: number) => { const b = Buffer.alloc(320); for (let i = 0; i < 160; i++) b.writeInt16LE(i % 2 ? v : -v, i * 2); return pcm16ToMulaw(b).toString('base64'); };
-    const lastToGemini = () => Buffer.from(h.sentToGemini.filter((m) => m.realtimeInput).at(-1).realtimeInput.audio.data, 'base64');
-    // the AI says 1 s (24 kHz PCM: 48000 bytes)
-    await h.gem().onMessage(JSON.stringify({ serverContent: { modelTurn: { parts: [{ inlineData: { mimeType: 'audio/pcm;rate=24000', data: Buffer.alloc(48000, 0x10).toString('base64') } }] } } }));
-    clock.t += 500; h.s.fromCaller(level(4000)); // its echo
-    const echo = lastToGemini();
-    const peak = (b: Buffer) => { let m = 0; for (let i = 0; i + 1 < b.length; i += 2) m = Math.max(m, Math.abs(b.readInt16LE(i))); return m; };
-    assert.ok(peak(echo) > 0 && peak(echo) < 400, 'the echo reaches Gemini turned far down, never as digital zeros');
-    clock.t += 200; h.s.fromCaller(level(20000)); // the caller speaks over it
-    assert.ok(lastToGemini().some((x) => x !== 0), 'a clear voice gets through');
-    clock.t += 1000; h.s.fromCaller(level(4000)); // 1.7 s: played and 0.4 s later
-    assert.ok(lastToGemini().some((x) => x !== 0), 'after the playback the caller is heard normally');
-  });
-
   it('Gemini drops the line mid-call (1011): connected again, the conversation resumed with its handle; at most twice, then the call ends', async () => {
     const h = harness(OPEN);
     await h.s.start('MZ1', ids);

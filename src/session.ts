@@ -2,7 +2,7 @@
 // for everything about the salon. Gemini hears and speaks every language itself, so the caller may
 // switch language at any time. The salon, the caller and the call id come from Twilio (signed), never
 // from what anyone says. Timers and sockets are passed in, so the whole flow runs in tests.
-import { geminiToPhone, mulawToPcm16, pcm16ToMulaw, phoneToGemini } from './audio.ts';
+import { geminiToPhone, mulawToPcm16, phoneToGemini } from './audio.ts';
 import { fillPrompt, type CallIds, type CoreClient } from './core.ts';
 import { CORE_TOOL_NAMES, geminiTools } from './tools.ts';
 import { dialTwiml, hangupTwiml, sayTwiml } from './twilio.ts';
@@ -30,8 +30,6 @@ const LANGUAGE_NAMES: Record<string, string> = { en: 'English', es: 'Spanish', f
 const FIRST_SILENCE_NUDGE_MS = 8000; // the caller never spoke: the goodbye comes this long after the one re-ask
 const RECONNECT_CODES = [1001, 1006, 1011, 1013, 1014]; // Gemini went away or failed: not our close, not a refusal
 const RECONNECTED = 'The line dropped for a moment and you missed what the caller said. Apologize in one short sentence, in the caller\'s language, and ask them to repeat it.';
-const ECHO_HOLD_MS = 400; // the echo of the AI's last words still comes back this long after they played
-const BARGE_IN_PEAK = 9000; // of 32767: a caller speaking over the AI, clearly louder than a speakerphone echo
 const WAIT_RESTART_MS = 8000; // the AI has been quiet this long with nothing running: the silence count starts again
 const CALLER_PAUSE_MS = 3000; // ... once the caller has been quiet this long
 const OPENING_AUDIO_WAIT_MS = 4000; // the ready-made opening is late: Gemini says it instead
@@ -66,14 +64,13 @@ export class CallSession {
   private muted = false; // the goodbye turn is over: no more AI audio for the caller (no second goodbye)
   private aiWaitingSince = 0; // the AI finished a turn and waits for the caller (0: it does not)
   private reasks = 0; // re-asks since the AI last answered the caller (at most 2; 1 before the caller ever spoke)
-  private talked = false;
+  private talked = false; // the AI has answered the caller once (a conversation started)
   private plain = false; // the Gemini setting in use (plain after a 1007 at the start)
   private resumeHandle: string | null = null; // Gemini's latest handle to resume this conversation
   private reconnects = 0;
   private reconnecting = false;
-  private playbackUntil = 0; // when the AI audio sent to Twilio will have finished playing (ms)
   private turnText = ''; // what the AI said in this turn (transcription)
-  private falseClaims = 0; // "booked" with no tool ok: corrected (at most twice a call) // the AI has answered the caller once (a conversation started)
+  private falseClaims = 0; // "booked" with no tool ok: corrected (at most twice a call)
   private lastAiAudioAt = 0;
   private lastLoudAt = 0;
   private toolsRunning = 0;
@@ -201,17 +198,7 @@ export class CallSession {
   fromCaller(payloadB64: string) {
     if (this.ready && this.gemini && this.openingHeard) {
       const now = this.deps.now().getTime();
-      let pcm = mulawToPcm16(Buffer.from(payloadB64, 'base64'));
-      // speakerphone echo: while the AI's words still play at the caller (and a moment after), only a voice
-      // clearly louder than the echo gets through; the rest is turned down about 24 dB, so the AI does not
-      // hear itself, stop and start its sentence again. Turned down, never digital zeros: a stream of
-      // exact zeros is not what a phone line sends (Gemini failed with 1011 "Internal error" on it)
-      if (now < this.playbackUntil + ECHO_HOLD_MS && peakOf(pcm) < BARGE_IN_PEAK) {
-        const quiet = Buffer.alloc(pcm.length);
-        for (let i = 0; i + 1 < pcm.length; i += 2) quiet.writeInt16LE(Math.trunc(pcm.readInt16LE(i) / 16), i);
-        pcm = quiet;
-        payloadB64 = pcm16ToMulaw(quiet).toString('base64');
-      }
+      const pcm = mulawToPcm16(Buffer.from(payloadB64, 'base64'));
       // silence counts only while the AI waits for an answer (never while it thinks, runs a tool or speaks)
       // the AI is quiet, no tool runs and the caller is quiet, but no wait is counted (e.g. the AI was cut
       // off, or never answered): count again, so the line is never silent for good
@@ -262,7 +249,6 @@ export class CallSession {
         this.firstAudio = true;
         // ~1 s pieces; Twilio plays them in order
         for (let i = 0; i < audio.length; i += 10_664) {
-          this.playing(audio.slice(i, i + 10_664));
           this.twilio.send(JSON.stringify({ event: 'media', streamSid: this.streamSid, media: { payload: audio.slice(i, i + 10_664) } }));
         }
         this.twilio.send(JSON.stringify({ event: 'mark', streamSid: this.streamSid, mark: { name: 'opening' } }));
@@ -308,12 +294,6 @@ export class CallSession {
   /** Start-up timing: how long after Twilio's start each step came (the caller hears nothing until first_audio). */
   private step(name: string) {
     this.deps.log('start_timing', { step: name, ms: this.deps.now().getTime() - this.t0, retried: this.retried });
-  }
-
-  /** Audio sent to the caller (base64 mu-law 8 kHz: 8000 bytes a second): it plays after what is queued. */
-  private playing(b64: string) {
-    const ms = (Math.floor((b64.length * 3) / 4) / 8000) * 1000;
-    this.playbackUntil = Math.max(this.playbackUntil, this.deps.now().getTime()) + ms;
   }
 
   /** The AI said something was booked (cancelled, moved) but no tool answered ok: it must correct itself now. */
@@ -391,7 +371,6 @@ export class CallSession {
       if (part?.inlineData?.data && !this.firstAudio) { this.firstAudio = true; this.step('first_audio'); }
       if (part?.inlineData?.data) {
         const payload = geminiToPhone(part.inlineData.data, part.inlineData.mimeType);
-        this.playing(payload);
         this.twilio.send(JSON.stringify({ event: 'media', streamSid: this.streamSid, media: { payload } }));
       }
     }
@@ -425,7 +404,6 @@ export class CallSession {
     // the caller spoke over the AI: drop what Twilio still has queued (never the opening)
     if (m.serverContent?.interrupted && this.openingHeard) {
       this.twilio.send(JSON.stringify({ event: 'clear', streamSid: this.streamSid }));
-      this.playbackUntil = this.deps.now().getTime(); // nothing more plays
     }
     if (m.toolCall?.functionCalls?.length) this.aiWaitingSince = 0; // a tool runs: the caller is not being asked
     if (m.toolCall?.functionCalls?.length) await this.runTools(m.toolCall.functionCalls);
