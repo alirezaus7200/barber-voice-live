@@ -33,7 +33,7 @@ const TIME_WARNING_S = 40; // seconds before the call cap when the AI is told to
 const TIME_NUDGE = 'About 40 seconds are left in this call. If a booking is not finished, ask the one question still missing, short, and finish it now. If it cannot be finished, ask the caller: shall I connect you to the barber, or take a message for the barber? (Offer to connect them only if the salon is open now; otherwise offer only the message.) Then stop and wait for the answer. If they want a message, take it with take_message, then say a short goodbye in the caller\'s language and call end_call. Never say goodbye in the same turn as a question.';
 const SILENCE_NUDGE_MS = 15000; // after both re-asks the caller still says nothing this long: the AI thanks them and ends the call
 const REASK_MS = 5000; // the AI asked and the caller says nothing this long: the AI asks again (callers do not wait in silence)
-const REASK = 'The caller has not answered for about 5 seconds. Say only your last question again, short, in the caller\'s language (after the opening: just "How can I help you?"). Add nothing else: never say they have not answered.';
+const REASK = 'The caller has not answered for about 5 seconds. Say out loud now only your last question again, short, in the caller\'s language (after the opening: just "How can I help you?"). Add nothing else: never say they have not answered.';
 const REASK_OFFER = 'The caller still has not answered. Ask one short question only, nothing else: if a booking is not finished, "Shall I connect you to the barber, or leave a message for them?" (offer to connect only if the salon is open now; otherwise only the message); if the booking is done, "Anything else?"; otherwise just "How can I help you?" again. Then wait for the answer.';
 const MESSAGE_DONE = 'The message is passed on. Now, in one short answer, tell the caller the barber will get their message and get back to them, then say goodbye (only once in this call), and call end_call.';
 const OPENING_MAX_MS = 20000; // Twilio never confirmed the opening was played: the caller is heard anyway after this
@@ -160,7 +160,9 @@ export class CallSession {
         this.reasks = 0;
       } else if (this.aiWaitingSince && now - this.aiWaitingSince > REASK_MS && this.reasks < 2 && !this.hangUpWhenSaid) {
         this.reasks += 1;
-        this.aiWaitingSince = 0;
+        if (this.nudgePending) this.deps.log('nudge_unanswered', {}); // Gemini said nothing to the last one
+        // still counting: if Gemini says nothing to this either, the next step still comes (never a silent line)
+        this.aiWaitingSince = now;
         this.nudgePending = true;
         this.deps.log('reask', { n: this.reasks });
         this.gemini.send(JSON.stringify({ clientContent: { turns: [{ role: 'user', parts: [{ text: this.reasks === 1 ? REASK : REASK_OFFER }] }], turnComplete: true } }));
@@ -225,7 +227,7 @@ export class CallSession {
   private openingNote(): string {
     if (!this.deps.speak || !this.opening) return '';
     return `\n\n# The opening is played for you\nThe phone system plays your opening to the caller, word for word: "${this.opening}". `
-      + 'Never say it yourself, unless an instruction tells you "Say exactly this". After it, wait for the caller to speak.';
+      + 'Never say it yourself, unless an instruction tells you "Say exactly this". After it, let the caller speak first; when an instruction tells you to ask or say something, say it out loud at once.';
   }
 
   /** The caller's language, fixed by barber-core (set_caller_language): told to Gemini in the tool's answer. */
