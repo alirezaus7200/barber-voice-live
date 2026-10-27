@@ -240,12 +240,12 @@ describe('a call', () => {
     clock.t += 4000; h.s.fromCaller(silent);
     assert.equal(said().length, 1, 'only 4 s since the question was heard');
     clock.t += 2000; h.s.fromCaller(silent);
-    assert.match(said()[1], /5 seconds.*question again/s);
+    assert.match(said()[1], /5 seconds.*Say only your last question again.*never say they have not answered/s);
     clock.t += 8000; h.s.fromCaller(silent);
     assert.equal(said().length, 2, 'the AI has not said the re-ask yet: no second one');
     await h.gem().onMessage(JSON.stringify({ serverContent: { turnComplete: true } }));
     clock.t += 8000; h.s.fromCaller(silent);
-    assert.match(said()[2], /connect you to the barber, or take a message.*only if the salon is open/s);
+    assert.match(said()[2], /one short question only.*connect you to the barber, or leave a message.*only if the salon is open/s);
     await h.gem().onMessage(JSON.stringify({ serverContent: { turnComplete: true } }));
     clock.t += 8000; h.s.fromCaller(silent);
     assert.equal(said().length, 3, 'at most 2 re-asks; then the 30 s silence rule ends the call');
