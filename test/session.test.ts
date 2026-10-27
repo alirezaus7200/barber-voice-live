@@ -168,6 +168,17 @@ describe('a call', () => {
     assert.doesNotMatch(JSON.stringify(h.logs), /Dana|2026-10-23/);
   });
 
+  it('a refused tool logs its reason code (never the arguments)', async () => {
+    const h = harness(OPEN, (list) => list.map((t) => ({ toolCallId: t.id, name: t.name, result: '{"ok":false,"reason":"unsupported_language"}' })));
+    await h.s.start('MZ1', ids);
+    h.gem().onOpen();
+    await speak(h);
+    await h.gem().onMessage(JSON.stringify({ toolCall: { functionCalls: [{ id: 'b1', name: 'book_appointment', args: { customer_name: 'Alireza', language: 'fa' } }] } }));
+    await new Promise((r) => setImmediate(r));
+    assert.deepEqual(h.logs.find(([e]) => e === 'tool_result'), ['tool_result', { tool: 'book_appointment', ok: false, reason: 'unsupported_language' }]);
+    assert.doesNotMatch(JSON.stringify(h.logs), /Alireza/);
+  });
+
   it('the setup: a short pause, but no interruption by line noise or the AI\'s own voice', async () => {
     const h = harness(OPEN);
     await h.s.start('MZ1', ids);

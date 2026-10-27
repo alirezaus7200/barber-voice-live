@@ -98,13 +98,13 @@ describe('the booking steps in the prompt', () => {
     const { readFileSync } = await import('node:fs');
     const prompt = readFileSync(new URL('../src/prompt.txt', import.meta.url), 'utf8');
     const name = prompt.indexOf("first get the caller's name");
-    const consent = prompt.indexOf('Before booking, ask for permission to send WhatsApp reminders');
+    const consent = prompt.indexOf('Before booking, ask once, short: "Shall we send you a WhatsApp reminder?"');
     const readBack = prompt.indexOf('Then read it all back in one sentence, every time, even when each part was\n   already agreed one by one');
     assert.ok(prompt.includes('Never call book_appointment before this read-back.'));
     assert.ok(prompt.includes("a known caller's first name counts: never ask it again"));
     const book = prompt.indexOf('call book_appointment. Never end the call before it');
     assert.ok(name > 0 && consent > name && readBack > consent && book > readBack, 'name, consent, read-back, booking');
-    assert.ok(prompt.includes('never ask\n   after booking'), 'consent is recorded only in the booking call');
+    assert.ok(prompt.includes('so never ask after booking'), 'consent is recorded only in the booking call');
   });
   it('the known caller is greeted by first name and offered the usual barber and last services, once; noise is never guessed', async () => {
     const { readFileSync } = await import('node:fs');
