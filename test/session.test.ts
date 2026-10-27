@@ -199,6 +199,11 @@ describe('a call', () => {
     assert.equal(said().length, 4, 'the opening, 2 re-asks, one goodbye');
     assert.match(said()[3], /not answered at all.*call again.*end_call/s);
     assert.deepEqual(h.logs.find(([e]) => e === 'silence_nudge'), ['silence_nudge', { silentSeconds: 16 }]);
+    // the AI's end_call after the silence goodbye is accepted (nothing booked, but the caller said nothing)
+    await h.gem().onMessage(JSON.stringify({ toolCall: { functionCalls: [{ id: 'e9', name: 'end_call' }] } }));
+    await new Promise((r) => setImmediate(r));
+    assert.equal(h.sentToGemini.at(-1).toolResponse.functionResponses[0].response.ok, true, 'no "not finished" refusal');
+    assert.ok(!h.logs.some(([e]) => e === 'end_call_refused'));
     // the goodbye ends the call at once, even if the AI never calls end_call
     await aiSays();
     assert.deepEqual(h.sentToTwilio.at(-1), { event: 'mark', streamSid: 'MZ1', mark: { name: 'goodbye' } });

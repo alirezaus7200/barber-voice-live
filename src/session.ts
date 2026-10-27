@@ -371,7 +371,8 @@ export class CallSession {
     for (const c of calls) {
       if (c.name === 'end_call') {
         // the call is not finished yet (nothing booked, no message, no transfer): ask the AI to continue, once
-        if (!this.outcome && !this.refusedEnd) {
+        // (never after the silence goodbye: that one ends the call on purpose)
+        if (!this.outcome && !this.refusedEnd && !this.hangUpWhenSaid) {
           this.refusedEnd = true;
           this.deps.log('end_call_refused', {});
           responses.push({ id: c.id, name: c.name, response: { ok: false, reason: 'not_finished', hint: 'Ask whether the caller wants to book or leave a message before you end the call.' } });
