@@ -575,7 +575,9 @@ describe('a call', () => {
     assert.deepEqual(setup.sessionResumption, { handle: 'h-1' }, 'the same conversation');
     await h.sockets[1].onMessage(JSON.stringify({ setupComplete: {} }));
     assert.ok(!h.sentToGemini.some((m) => m.clientContent?.turns?.[0]?.parts?.[0]?.text?.startsWith('The line dropped')), 'resumed: nothing to explain');
-    assert.deepEqual(h.logs.find(([e]) => e === 'gemini_reconnect'), ['gemini_reconnect', { code: 1011, resumed: true }]);
+    assert.deepEqual(h.logs.find(([e]) => e === 'gemini_reconnect'), ['gemini_reconnect', { code: 1011, resumed: true, plain: true }]);
+    assert.equal(setup.outputAudioTranscription, undefined, 'the plain setting after a drop');
+    assert.equal(setup.inputAudioTranscription, undefined);
     h.sockets[1].onClose(1011);
     h.sockets[2].onClose(1011);
     await new Promise((r) => setImmediate(r));
