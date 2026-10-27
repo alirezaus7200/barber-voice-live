@@ -178,8 +178,9 @@ export class CallSession {
           this.reconnects++;
           this.ready = false;
           this.reconnecting = true;
-          this.deps.log('gemini_reconnect', { code, resumed: Boolean(this.resumeHandle) });
-          this.connectGemini(this.plain);
+          // the plain setting (no transcriptions, no activity settings): the full one may be what Gemini fails on
+          this.deps.log('gemini_reconnect', { code, resumed: Boolean(this.resumeHandle), plain: true });
+          this.connectGemini(true);
           return;
         }
         this.endedReason = 'gemini-closed';
