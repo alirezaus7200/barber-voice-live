@@ -27,6 +27,7 @@ export type SessionDeps = {
 
 const TRANSFER_DELAY_MS = 4000; // the AI says "connecting you now" first
 const LANGUAGE_NAMES: Record<string, string> = { en: 'English', es: 'Spanish', fa: 'Persian (Farsi)' };
+const FIRST_SILENCE_NUDGE_MS = 8000; // the caller never spoke: the goodbye comes this long after the one re-ask
 const WAIT_RESTART_MS = 8000; // the AI has been quiet this long with nothing running: the silence count starts again
 const CALLER_PAUSE_MS = 3000; // ... once the caller has been quiet this long
 const OPENING_AUDIO_WAIT_MS = 4000; // the ready-made opening is late: Gemini says it instead
@@ -57,7 +58,8 @@ export class CallSession {
   private toolAnsweredAt = 0; // when the last tool answer went to Gemini, until it speaks again
   private muted = false; // the goodbye turn is over: no more AI audio for the caller (no second goodbye)
   private aiWaitingSince = 0; // the AI finished a turn and waits for the caller (0: it does not)
-  private reasks = 0; // re-asks since the AI last answered the caller (at most 2)
+  private reasks = 0; // re-asks since the AI last answered the caller (at most 2; 1 before the caller ever spoke)
+  private talked = false; // the AI has answered the caller once (a conversation started)
   private lastAiAudioAt = 0;
   private lastLoudAt = 0;
   private toolsRunning = 0;
@@ -183,7 +185,7 @@ export class CallSession {
         // a loud line (the caller, or noise and echo) pauses the count; only the AI answering resets the re-asks
         this.aiWaitingSince = 0;
         this.lastLoudAt = now;
-      } else if (this.aiWaitingSince && now - this.aiWaitingSince > REASK_MS && this.reasks < 2 && !this.hangUpWhenSaid) {
+      } else if (this.aiWaitingSince && now - this.aiWaitingSince > REASK_MS && this.reasks < this.maxReasks() && !this.hangUpWhenSaid) {
         this.reasks += 1;
         if (this.nudgePending) this.deps.log('nudge_unanswered', {}); // Gemini said nothing to the last one
         // still counting: if Gemini says nothing to this either, the next step still comes (never a silent line)
@@ -191,7 +193,8 @@ export class CallSession {
         this.nudgePending = true;
         this.deps.log('reask', { n: this.reasks });
         this.gemini.send(JSON.stringify({ clientContent: { turns: [{ role: 'user', parts: [{ text: this.reasks === 1 ? REASK : REASK_OFFER }] }], turnComplete: true } }));
-      } else if (this.aiWaitingSince && this.reasks >= 2 && !this.nudged && now - this.aiWaitingSince > SILENCE_NUDGE_MS) {
+      } else if (this.aiWaitingSince && this.reasks >= this.maxReasks() && !this.nudged
+                 && now - this.aiWaitingSince > (this.talked ? SILENCE_NUDGE_MS : FIRST_SILENCE_NUDGE_MS)) {
         this.nudged = true;
         this.deps.log('silence_nudge', { silentSeconds: Math.round((now - this.aiWaitingSince) / 1000) });
         this.aiWaitingSince = 0;
@@ -267,6 +270,11 @@ export class CallSession {
     this.deps.log('start_timing', { step: name, ms: this.deps.now().getTime() - this.t0, retried: this.retried });
   }
 
+  /** Before the caller ever spoke the opening already asked "How can I help you?": one re-ask is enough. */
+  private maxReasks(): number {
+    return this.talked ? 2 : 1;
+  }
+
   /** Twilio "mark": what the AI said has been fully played to the caller; the wait for an answer starts now. */
   played(name?: string) {
     if (name === 'goodbye') return void this.hangUp();
@@ -296,7 +304,7 @@ export class CallSession {
         this.aiWaitingSince = 0;
         this.turnAudio = true;
         this.openingSpoken = true;
-        if (!this.nudgePending) this.reasks = 0;
+        if (!this.nudgePending) { this.reasks = 0; if (this.openingHeard) this.talked = true; }
         if (this.toolAnsweredAt) {
           this.deps.log('gemini_reply', { ms: this.deps.now().getTime() - this.toolAnsweredAt });
           this.toolAnsweredAt = 0;
