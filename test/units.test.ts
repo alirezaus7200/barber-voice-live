@@ -110,8 +110,10 @@ describe('the booking steps in the prompt', () => {
     const { readFileSync } = await import('node:fs');
     const prompt = readFileSync(new URL('../src/prompt.txt', import.meta.url), 'utf8');
     assert.ok(prompt.includes('{{known_caller}}'));
-    assert.ok(prompt.includes('ask its "offer" question word\n   for word, as your first question'));
-    assert.ok(prompt.includes('Never ask "which barber?" or "which service?" first.'));
+    assert.ok(prompt.includes('your first question is its "offer", word for word'))
+    assert.ok(prompt.includes('Never ask "is your barber <name>?"'), 'the usual barber is suggested, not checked')
+    assert.ok(prompt.includes("If there is more than one barber, say the barbers'\n   names and ask which one they want."), 'a new caller hears the names');
+    assert.ok(prompt.includes('never ask "which barber?" or "which\n   service?" first.'));
     assert.ok(prompt.includes('Never guess a name, a time, a barber or a service.'));
   });
   it('no time is offered before check_availability was called in this call', async () => {
