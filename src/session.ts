@@ -88,7 +88,7 @@ export class CallSession {
     this.t0 = this.deps.now().getTime();
     let r: any;
     try {
-      r = await this.deps.core.start(this.ids);
+      r = await this.deps.core.start(this.ids, this.deps.speak ? this.deps.voice : undefined);
     } catch (e: any) {
       this.deps.log('core_start_failed', { call: p.callSid, error: String(e?.message ?? e) });
       r = { error: 'Sorry, this number cannot take calls right now. Please try again later.' };
@@ -103,8 +103,20 @@ export class CallSession {
     // shortly before the cap the AI wraps up itself, so the call is not cut mid-sentence
     if (max > TIME_WARNING_S * 2) this.timers.push(this.deps.setTimer((max - TIME_WARNING_S) * 1000, () => this.warnTimeLeft()));
     this.variables = o.variableValues ?? {};
-    // made while Gemini connects; most often it is already in memory
-    if (this.deps.speak && this.opening) this.openingAudio = this.deps.speak(this.opening).catch(() => null);
+    // barber-core keeps it once made; else it is made while Gemini connects and kept for the next calls
+    if (typeof r.openingAudio === 'string' && r.openingAudio && this.deps.speak) {
+      this.openingAudio = Promise.resolve(r.openingAudio);
+      this.deps.log('opening_audio', { source: 'stored' });
+    } else if (this.deps.speak && this.opening) {
+      const text = this.opening;
+      this.openingAudio = this.deps.speak(text).catch(() => null);
+      void this.openingAudio.then((audio) => {
+        if (!audio) return;
+        this.deps.core.saveOpening(this.ids, { voice: this.deps.voice, text, audio })
+          .then((x: any) => this.deps.log('opening_audio', { source: 'made', kept: x?.ok === true }))
+          .catch((e: any) => this.deps.log('opening_audio_not_kept', { error: String(e?.message ?? e).slice(0, 100) }));
+      });
+    }
     // the salon's date and time the AI is told (no caller data), to check a wrong "tomorrow"
     this.deps.log('call_date', { now: String(this.variables.current_local_datetime ?? ''), days: String(this.variables.upcoming_days ?? '').slice(0, 120) });
     this.connectGemini();
