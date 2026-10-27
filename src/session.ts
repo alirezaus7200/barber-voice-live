@@ -21,9 +21,12 @@ export type SessionDeps = {
   clearTimer(t: unknown): void;
   now(): Date;
   log(event: string, data: Record<string, unknown>): void;
+  /** The opening as ready-made phone audio (base64 mu-law 8 kHz), word for word; null = Gemini says it. */
+  speak?(text: string): Promise<string | null>;
 };
 
 const TRANSFER_DELAY_MS = 4000; // the AI says "connecting you now" first
+const OPENING_AUDIO_WAIT_MS = 4000; // the ready-made opening is late: Gemini says it instead
 const GOODBYE_MAX_MS = 15000; // safety: hang up even if the goodbye never completes
 const TIME_WARNING_S = 40; // seconds before the call cap when the AI is told to wrap up (enough to take a message)
 const TIME_NUDGE = 'About 40 seconds are left in this call. If a booking is not finished, ask the one question still missing, short, and finish it now. If it cannot be finished, ask the caller: shall I connect you to the barber, or take a message for the barber? (Offer to connect them only if the salon is open now; otherwise offer only the message.) Then stop and wait for the answer. If they want a message, take it with take_message, then say a short goodbye in the caller\'s language and call end_call. Never say goodbye in the same turn as a question.';
@@ -64,6 +67,8 @@ export class CallSession {
   private openingHeard = false;
   private openingTries = 0;
   private turnAudio = false; // the AI's current turn had audio
+  private openingAudio: Promise<string | null> = Promise.resolve(null);
+  private openingPlayed = false; // the ready-made opening went to the caller
   private openingSpoken = false; // the AI has started saying the opening (no tool runs before that)
 
   private deps: SessionDeps;
@@ -97,6 +102,8 @@ export class CallSession {
     // shortly before the cap the AI wraps up itself, so the call is not cut mid-sentence
     if (max > TIME_WARNING_S * 2) this.timers.push(this.deps.setTimer((max - TIME_WARNING_S) * 1000, () => this.warnTimeLeft()));
     this.variables = o.variableValues ?? {};
+    // made while Gemini connects; most often it is already in memory
+    if (this.deps.speak && this.opening) this.openingAudio = this.deps.speak(this.opening).catch(() => null);
     // the salon's date and time the AI is told (no caller data), to check a wrong "tomorrow"
     this.deps.log('call_date', { now: String(this.variables.current_local_datetime ?? ''), days: String(this.variables.upcoming_days ?? '').slice(0, 120) });
     this.connectGemini();
@@ -167,6 +174,41 @@ export class CallSession {
     }
   }
 
+  /** The opening first, word for word: our ready-made audio if there is one, else Gemini says it. */
+  private async startOpening() {
+    if (!this.deps.speak && !this.openingPlayed) return this.askOpening();
+    const wait = new Promise<null>((r) => this.timers.push(this.deps.setTimer(OPENING_AUDIO_WAIT_MS, () => r(null))));
+    const audio = this.openingPlayed ? null : await Promise.race([this.openingAudio, wait]);
+    if (this.closed || !this.gemini) return;
+    if (this.openingPlayed || audio) {
+      if (audio) {
+        this.openingPlayed = true;
+        this.openingSpoken = true;
+        this.step('first_audio');
+        this.firstAudio = true;
+        // ~1 s pieces; Twilio plays them in order
+        for (let i = 0; i < audio.length; i += 10_664) {
+          this.twilio.send(JSON.stringify({ event: 'media', streamSid: this.streamSid, media: { payload: audio.slice(i, i + 10_664) } }));
+        }
+        this.twilio.send(JSON.stringify({ event: 'mark', streamSid: this.streamSid, mark: { name: 'opening' } }));
+        this.timers.push(this.deps.setTimer(OPENING_MAX_MS, () => {
+          if (this.openingHeard || this.closed) return;
+          this.deps.log('opening_mark_missing', {});
+          this.played('opening');
+        }));
+        this.deps.log('opening_played', { source: 'tts' });
+      }
+      // Gemini knows the caller heard it, and waits for them (no answer now)
+      this.openingSpoken = true;
+      this.gemini.send(JSON.stringify({ clientContent: {
+        turns: [{ role: 'user', parts: [{ text: `The call has started. The caller has already heard your opening: "${this.opening}". Do not say it again. Wait for the caller, then help them.` }] }],
+        turnComplete: false,
+      } }));
+      return;
+    }
+    this.askOpening();
+  }
+
   /** The AI disclosure and the recording notice come first, word for word (barber-core's opening). */
   private askOpening() {
     this.openingTries += 1;
@@ -202,7 +244,7 @@ export class CallSession {
     if (m.setupComplete) {
       this.step('gemini_ready');
       this.ready = true;
-      if (!this.openingHeard) this.askOpening();
+      if (!this.openingHeard) void this.startOpening();
     }
     for (const part of m.serverContent?.modelTurn?.parts ?? []) {
       if (part?.inlineData?.data && this.muted) continue;

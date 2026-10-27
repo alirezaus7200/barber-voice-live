@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { CallSession, type SessionDeps } from '../src/session.ts';
 import { pcm16ToMulaw } from '../src/audio.ts';
 
-function harness(startAnswer: any, toolAnswer: (list: any[]) => any[] = () => [], clock = { t: Date.parse('2026-10-22T15:00:00Z') }) {
+function harness(startAnswer: any, toolAnswer: (list: any[]) => any[] = () => [], clock = { t: Date.parse('2026-10-22T15:00:00Z') }, speak?: (text: string) => Promise<string | null>) {
   const sentToGemini: any[] = [];
   const sentToTwilio: any[] = [];
   const core: any[] = [];
@@ -25,6 +25,7 @@ function harness(startAnswer: any, toolAnswer: (list: any[]) => any[] = () => []
     prompt: 'You answer for {{shop_name}}.', model: 'live-model', voice: 'Kore',
     setTimer: (ms, fn) => { timers.push({ ms, fn }); return timers.length; }, clearTimer: () => {},
     now: () => new Date(clock.t), log: (event, data) => logs.push([event, data]),
+    ...(speak ? { speak } : {}),
   };
   const s = new CallSession(deps, { send: (d) => sentToTwilio.push(JSON.parse(d)), close: () => {} });
   return { s, sentToGemini, sentToTwilio, core, updates, timers, logs, sockets, gem: () => gem };
@@ -269,6 +270,46 @@ describe('a call', () => {
     assert.deepEqual(h.logs.filter(([e]) => e === 'start_timing').map(([, d]) => [d.step, d.ms, d.retried]), [
       ['core_answered', 1200, false], ['gemini_ready', 2000, false], ['first_audio', 3500, false],
     ]);
+  });
+
+  it('the opening is our ready-made audio, word for word: played first, Gemini only told; the caller is heard after it', async () => {
+    const asked: string[] = [];
+    const audio = Buffer.alloc(16000, 0x7f).toString('base64'); // 2 s of mu-law
+    const h = harness(OPEN, () => [], undefined, async (text) => { asked.push(text); return audio; });
+    await h.s.start('MZ1', ids);
+    assert.deepEqual(asked, [OPEN.assistantOverrides.firstMessage], 'made while Gemini connects');
+    h.gem().onOpen();
+    await h.gem().onMessage(JSON.stringify({ setupComplete: {} }));
+    await new Promise((r) => setImmediate(r));
+    const media = h.sentToTwilio.filter((m) => m.event === 'media');
+    assert.equal(media.map((m) => m.media.payload).join(''), audio, 'the whole opening, in order');
+    assert.deepEqual(h.sentToTwilio.at(-1), { event: 'mark', streamSid: 'MZ1', mark: { name: 'opening' } });
+    const told = h.sentToGemini.filter((m) => m.clientContent);
+    assert.equal(told.length, 1);
+    assert.equal(told[0].clientContent.turnComplete, false, 'Gemini does not answer now');
+    assert.match(told[0].clientContent.turns[0].parts[0].text, /already heard your opening.*این تماس ممکن است ضبط شود.*Do not say it again/s);
+    h.s.fromCaller(pcm16ToMulaw(Buffer.alloc(160, 0x7f)).toString('base64'));
+    assert.equal(h.sentToGemini.filter((m) => m.realtimeInput).length, 0, 'not while it plays');
+    h.s.played('opening');
+    h.s.fromCaller(pcm16ToMulaw(Buffer.alloc(160)).toString('base64'));
+    assert.equal(h.sentToGemini.filter((m) => m.realtimeInput).length, 1);
+    assert.ok(h.logs.some(([e, d]) => e === 'opening_played' && d.source === 'tts'));
+    // a 1007 retry: the new session is told again, the caller does not hear it twice
+    h.sockets[0].onClose(1007);
+    h.sockets[1].onOpen();
+    await h.sockets[1].onMessage(JSON.stringify({ setupComplete: {} }));
+    await new Promise((r) => setImmediate(r));
+    assert.equal(h.sentToTwilio.filter((m) => m.event === 'media').length, media.length, 'not played again');
+  });
+
+  it('no ready-made opening (TTS failed): Gemini says it, as before', async () => {
+    const h = harness(OPEN, () => [], undefined, async () => null);
+    await h.s.start('MZ1', ids);
+    h.gem().onOpen();
+    await h.gem().onMessage(JSON.stringify({ setupComplete: {} }));
+    await new Promise((r) => setImmediate(r));
+    assert.match(h.sentToGemini.at(-1).clientContent.turns[0].parts[0].text, /Say exactly this.*این تماس ممکن است ضبط شود/s);
+    assert.equal(h.sentToTwilio.length, 0);
   });
 
   it('no tool runs before the AI starts the opening (the caller would wait in silence and miss the disclosure)', async () => {
