@@ -28,24 +28,19 @@ export type SessionDeps = {
 const TRANSFER_DELAY_MS = 4000; // the AI says "connecting you now" first
 const LANGUAGE_NAMES: Record<string, string> = { en: 'English', es: 'Spanish', fa: 'Persian (Farsi)' };
 const FIRST_SILENCE_NUDGE_MS = 8000; // the caller never spoke: the goodbye comes this long after the one re-ask
-const RECONNECT_CODES = [1001, 1006, 1011, 1013, 1014]; // Gemini went away or failed: not our close, not a refusal
-const RECONNECTED = 'The line dropped for a moment and you missed what the caller said. Apologize in one short sentence, in the caller\'s language, and ask them to repeat it.';
 const WAIT_RESTART_MS = 8000; // the AI has been quiet this long with nothing running: the silence count starts again
 const CALLER_PAUSE_MS = 3000; // ... once the caller has been quiet this long
 const OPENING_AUDIO_WAIT_MS = 4000; // the ready-made opening is late: Gemini says it instead
 const GOODBYE_MAX_MS = 15000; // safety: hang up even if the goodbye never completes
 const TIME_WARNING_S = 40; // seconds before the call cap when the AI is told to wrap up (enough to take a message)
 const TIME_NUDGE = 'About 40 seconds are left in this call. If the caller already chose a time: read it back and, after their yes, call book_appointment now. Never say it is booked unless book_appointment answered ok. If it cannot be finished, ask the caller: shall I connect you to the barber, or take a message for the barber? (Offer to connect them only if the salon is open now; otherwise offer only the message.) Then stop and wait for the answer. If they want a message, take it with take_message, then say a short goodbye in the caller\'s language and call end_call. Never say goodbye in the same turn as a question.';
-// words that say something was booked, cancelled or moved (en, es, fa): never true before a tool said so (hard rule 8)
-const DONE_CLAIM = /\b(is booked|are booked|you're booked|you are booked|booked you|is all set|has been (booked|cancel+ed|moved|rescheduled)|is cancel+ed|(qued[oó]|est[aá]|ya est[aá]) (reservad[ao]|agendad[ao]|confirmad[ao]|cancelad[ao])|ha sido (reservad[ao]|cancelad[ao]))\b|ثبت شد|رزرو شد|رزرو کردم|ثبت کردم|لغو شد|جابجا شد/i;
-const FALSE_CLAIM = 'Correction: nothing has been booked, cancelled or moved in this call: no tool answered ok. Tell the caller right away, in their language, that it is not done yet. Then read the appointment back, and after their yes call book_appointment (or the tool they need). Never say it is done before the tool answers ok.';
 const SILENCE_NUDGE_MS = 15000; // after both re-asks the caller still says nothing this long: the AI thanks them and ends the call
 const REASK_MS = 5000; // the AI asked and the caller says nothing this long: the AI asks again (callers do not wait in silence)
 const REASK = 'The caller has not answered for about 5 seconds. Say out loud now only your last question again, short, in the caller\'s language (after the opening: just "How can I help you?"). Add nothing else: never say they have not answered.';
 const REASK_OFFER = 'The caller still has not answered. Ask one short question only, nothing else: if a booking is not finished, "Shall I connect you to the barber, or leave a message for them?" (offer to connect only if the salon is open now; otherwise only the message); if the booking is done, "Anything else?"; otherwise just "How can I help you?" again. Then wait for the answer.';
 const MESSAGE_DONE = 'The message is passed on. If you have not told the caller yet, tell them in one short answer that the barber will get their message and get back to them, and say goodbye. If you already said it, say nothing more. Then call end_call.';
 const OPENING_MAX_MS = 20000; // Twilio never confirmed the opening was played: the caller is heard anyway after this
-const SPEECH_PEAK = 700; // of 32767: a voice, even on a speakerphone (quieter than a handset); above the line's hiss
+const SPEECH_PEAK = 1500; // of 32767: louder than the line's background noise
 const SILENCE_NUDGE = 'The caller has not answered at all. Thank them for calling, say they are welcome to call again to book their appointment, then call end_call. Say it in the caller\'s last language.';
 
 export class CallSession {
@@ -65,12 +60,6 @@ export class CallSession {
   private aiWaitingSince = 0; // the AI finished a turn and waits for the caller (0: it does not)
   private reasks = 0; // re-asks since the AI last answered the caller (at most 2; 1 before the caller ever spoke)
   private talked = false; // the AI has answered the caller once (a conversation started)
-  private plain = false; // the Gemini setting in use (plain after a 1007 at the start)
-  private resumeHandle: string | null = null; // Gemini's latest handle to resume this conversation
-  private reconnects = 0;
-  private reconnecting = false;
-  private turnText = ''; // what the AI said in this turn (transcription)
-  private falseClaims = 0; // "booked" with no tool ok: corrected (at most twice a call)
   private lastAiAudioAt = 0;
   private lastLoudAt = 0;
   private toolsRunning = 0;
@@ -142,7 +131,6 @@ export class CallSession {
 
   /** One Gemini Live session for this call. If Gemini refuses it at once (1007), it is opened once more. */
   private connectGemini(plain = false) {
-    this.plain = plain;
     this.gemini = this.deps.openGemini({
       onOpen: () => this.gemini?.send(JSON.stringify({
         setup: {
@@ -150,11 +138,8 @@ export class CallSession {
           generationConfig: { responseModalities: ['AUDIO'], speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: this.deps.voice } } } },
           // a short pause before the AI answers; default sensitivity so a quiet caller is heard
           // the plain setting is the retry after Gemini refused the full one (1007)
-          // the AI's words as text (outputAudioTranscription): to catch a "booked" no tool confirmed
-          ...(plain ? {} : { realtimeInputConfig: { automaticActivityDetection: { silenceDurationMs: 600 } }, contextWindowCompression: { slidingWindow: {} }, outputAudioTranscription: {}, inputAudioTranscription: {} }),
+          ...(plain ? {} : { realtimeInputConfig: { automaticActivityDetection: { silenceDurationMs: 600 } }, contextWindowCompression: { slidingWindow: {} } }),
           systemInstruction: { parts: [{ text: fillPrompt(this.deps.prompt, this.variables) + this.openingNote() }] },
-          // Gemini sends handles to resume this conversation in a new connection (after an internal error)
-          sessionResumption: this.resumeHandle ? { handle: this.resumeHandle } : {},
           tools: geminiTools(),
         },
       })),
@@ -166,17 +151,6 @@ export class CallSession {
           this.ready = false;
           if (!this.openingHeard) this.openingSpoken = false;
           this.deps.log('gemini_retry', { reason: 'refused at start' });
-          this.connectGemini(true);
-          return;
-        }
-        // Gemini dropped the connection mid-call (e.g. 1011 "Internal error"): connect again and go on,
-        // with the conversation when Gemini gave a resumption handle; at most twice a call
-        if (RECONNECT_CODES.includes(code ?? 0) && this.reconnects < 2) {
-          this.reconnects++;
-          this.ready = false;
-          this.reconnecting = true;
-          // the plain setting (no transcriptions, no activity settings): the full one may be what Gemini fails on
-          this.deps.log('gemini_reconnect', { code, resumed: Boolean(this.resumeHandle), plain: true });
           this.connectGemini(true);
           return;
         }
@@ -296,18 +270,6 @@ export class CallSession {
     this.deps.log('start_timing', { step: name, ms: this.deps.now().getTime() - this.t0, retried: this.retried });
   }
 
-  /** The AI said something was booked (cancelled, moved) but no tool answered ok: it must correct itself now. */
-  private checkClaim(text: string) {
-    this.turnText = (this.turnText + text).slice(-600);
-    if (this.outcome || this.falseClaims >= 2 || !DONE_CLAIM.test(this.turnText)) return;
-    this.falseClaims++;
-    this.turnText = '';
-    this.deps.log('false_claim_corrected', {});
-    // the call does not end on it: the next end_call is refused until something really happened
-    this.refusedEnd = false;
-    this.gemini?.send(JSON.stringify({ clientContent: { turns: [{ role: 'user', parts: [{ text: FALSE_CLAIM }] }], turnComplete: true } }));
-  }
-
   /** Before the caller ever spoke the opening already asked "How can I help you?": one re-ask is enough. */
   private maxReasks(): number {
     return this.talked ? 2 : 1;
@@ -330,31 +292,11 @@ export class CallSession {
     try { m = JSON.parse(text); } catch { return; }
     // Gemini says it will close the session soon (goAway): log why, so a short call can be explained
     if (m.goAway) this.deps.log('gemini_go_away', { timeLeft: String(m.goAway.timeLeft ?? '') });
-    if (m.sessionResumptionUpdate?.resumable && typeof m.sessionResumptionUpdate.newHandle === 'string') {
-      this.resumeHandle = m.sessionResumptionUpdate.newHandle;
-    }
     if (m.setupComplete) {
       this.step('gemini_ready');
       this.ready = true;
-      if (this.reconnecting) {
-        this.reconnecting = false;
-        this.aiWaitingSince = this.deps.now().getTime();
-        // a fresh conversation (no handle): the AI knows only its instructions, so it asks the caller to repeat
-        if (!this.resumeHandle && this.openingHeard) {
-          this.gemini?.send(JSON.stringify({ clientContent: { turns: [{ role: 'user', parts: [{ text: RECONNECTED }] }], turnComplete: true } }));
-        }
-      }
       if (!this.openingHeard) void this.startOpening();
     }
-    // Gemini heard the caller (inputAudioTranscription): they answered, even if too quietly for our meter,
-    // so no re-ask now (a re-ask after an answer made the AI repeat its question)
-    const heard = m.serverContent?.inputTranscription?.text;
-    if (typeof heard === 'string' && heard.trim()) {
-      this.aiWaitingSince = 0;
-      this.lastLoudAt = this.deps.now().getTime();
-    }
-    const said = m.serverContent?.outputTranscription?.text;
-    if (typeof said === 'string' && said) this.checkClaim(said);
     for (const part of m.serverContent?.modelTurn?.parts ?? []) {
       if (part?.inlineData?.data && this.muted) continue;
       if (part?.inlineData?.data) {
@@ -369,10 +311,7 @@ export class CallSession {
         } // the AI answers the caller (who may speak too quietly for the meter)
       }
       if (part?.inlineData?.data && !this.firstAudio) { this.firstAudio = true; this.step('first_audio'); }
-      if (part?.inlineData?.data) {
-        const payload = geminiToPhone(part.inlineData.data, part.inlineData.mimeType);
-        this.twilio.send(JSON.stringify({ event: 'media', streamSid: this.streamSid, media: { payload } }));
-      }
+      if (part?.inlineData?.data) this.twilio.send(JSON.stringify({ event: 'media', streamSid: this.streamSid, media: { payload: geminiToPhone(part.inlineData.data, part.inlineData.mimeType) } }));
     }
     if (m.serverContent?.turnComplete && !this.openingHeard && !this.hangUpWhenSaid) {
       const said = this.turnAudio;
@@ -387,7 +326,6 @@ export class CallSession {
       return;
     }
     if (m.serverContent?.turnComplete) {
-      this.turnText = '';
       this.turnAudio = false;
       this.nudgePending = false;
       if (!this.hangUpWhenSaid) {
@@ -402,9 +340,7 @@ export class CallSession {
       }
     }
     // the caller spoke over the AI: drop what Twilio still has queued (never the opening)
-    if (m.serverContent?.interrupted && this.openingHeard) {
-      this.twilio.send(JSON.stringify({ event: 'clear', streamSid: this.streamSid }));
-    }
+    if (m.serverContent?.interrupted && this.openingHeard) this.twilio.send(JSON.stringify({ event: 'clear', streamSid: this.streamSid }));
     if (m.toolCall?.functionCalls?.length) this.aiWaitingSince = 0; // a tool runs: the caller is not being asked
     if (m.toolCall?.functionCalls?.length) await this.runTools(m.toolCall.functionCalls);
   }

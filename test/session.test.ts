@@ -168,17 +168,6 @@ describe('a call', () => {
     assert.doesNotMatch(JSON.stringify(h.logs), /Dana|2026-10-23/);
   });
 
-  it('a refused tool logs its reason code (never the arguments)', async () => {
-    const h = harness(OPEN, (list) => list.map((t) => ({ toolCallId: t.id, name: t.name, result: '{"ok":false,"reason":"unsupported_language"}' })));
-    await h.s.start('MZ1', ids);
-    h.gem().onOpen();
-    await speak(h);
-    await h.gem().onMessage(JSON.stringify({ toolCall: { functionCalls: [{ id: 'b1', name: 'book_appointment', args: { customer_name: 'Alireza', language: 'fa' } }] } }));
-    await new Promise((r) => setImmediate(r));
-    assert.deepEqual(h.logs.find(([e]) => e === 'tool_result'), ['tool_result', { tool: 'book_appointment', ok: false, reason: 'unsupported_language' }]);
-    assert.doesNotMatch(JSON.stringify(h.logs), /Alireza/);
-  });
-
   it('the setup: a short pause, but no interruption by line noise or the AI\'s own voice', async () => {
     const h = harness(OPEN);
     await h.s.start('MZ1', ids);
@@ -514,95 +503,6 @@ describe('a call', () => {
     assert.ok(h.logs.some(([e]) => e === 'wait_restarted'));
     clock.t += 6000; h.s.fromCaller(silent);
     assert.equal(said(), 3, 're-ask 2: the noise did not reset the count');
-  });
-
-  it('"booked" with no tool ok is caught from the AI\'s own words and corrected at once; the call does not end on it', async () => {
-    const h = harness(OPEN, (list) => list.map((t) => ({ toolCallId: t.id, name: t.name, result: '{"ok":true}' })));
-    await h.s.start('MZ1', ids);
-    h.gem().onOpen();
-    assert.deepEqual(h.sentToGemini[0].setup.outputAudioTranscription, {}, 'the AI\'s words come as text too');
-    await h.gem().onMessage(JSON.stringify({ setupComplete: {} }));
-    await heard(h);
-    await h.gem().onMessage(JSON.stringify({ serverContent: { outputTranscription: { text: 'قرار ملاقات شما فردا ساعت ۱۱ ' } } }));
-    await h.gem().onMessage(JSON.stringify({ serverContent: { outputTranscription: { text: 'با عرفان ثبت شد.' } } }));
-    const told = h.sentToGemini.filter((m) => m.clientContent).at(-1).clientContent;
-    assert.match(told.turns[0].parts[0].text, /^Correction: nothing has been booked/);
-    assert.ok(h.logs.some(([e]) => e === 'false_claim_corrected'));
-    await speak(h);
-    await h.gem().onMessage(JSON.stringify({ toolCall: { functionCalls: [{ id: 'e1', name: 'end_call' }] } }));
-    await new Promise((r) => setImmediate(r));
-    assert.equal(h.sentToGemini.at(-1).toolResponse.functionResponses[0].response.reason, 'not_finished', 'not ended on a false "booked"');
-    // after a real booking the same words are fine
-    await h.gem().onMessage(JSON.stringify({ toolCall: { functionCalls: [{ id: 'b1', name: 'book_appointment', args: {} }] } }));
-    await new Promise((r) => setImmediate(r));
-    const before = h.sentToGemini.filter((m) => m.clientContent).length;
-    await h.gem().onMessage(JSON.stringify({ serverContent: { outputTranscription: { text: 'Your appointment is booked.' } } }));
-    assert.equal(h.sentToGemini.filter((m) => m.clientContent).length, before);
-  });
-
-  it('Gemini drops the line mid-call (1011): connected again, the conversation resumed with its handle; at most twice, then the call ends', async () => {
-    const h = harness(OPEN);
-    await h.s.start('MZ1', ids);
-    h.gem().onOpen();
-    assert.deepEqual(h.sentToGemini[0].setup.sessionResumption, {}, 'resumption asked from the start');
-    await h.gem().onMessage(JSON.stringify({ setupComplete: {} }));
-    await heard(h);
-    await h.gem().onMessage(JSON.stringify({ sessionResumptionUpdate: { newHandle: 'h-1', resumable: true } }));
-    h.sockets[0].onClose(1011);
-    assert.equal(h.sockets.length, 2, 'connected again');
-    assert.equal(h.updates.length, 0, 'the call goes on');
-    h.sockets[1].onOpen();
-    const setup = h.sentToGemini.filter((m) => m.setup).at(-1).setup;
-    assert.deepEqual(setup.sessionResumption, { handle: 'h-1' }, 'the same conversation');
-    await h.sockets[1].onMessage(JSON.stringify({ setupComplete: {} }));
-    assert.ok(!h.sentToGemini.some((m) => m.clientContent?.turns?.[0]?.parts?.[0]?.text?.startsWith('The line dropped')), 'resumed: nothing to explain');
-    assert.deepEqual(h.logs.find(([e]) => e === 'gemini_reconnect'), ['gemini_reconnect', { code: 1011, resumed: true, plain: true }]);
-    assert.equal(setup.outputAudioTranscription, undefined, 'the plain setting after a drop');
-    assert.equal(setup.inputAudioTranscription, undefined);
-    h.sockets[1].onClose(1011);
-    h.sockets[2].onClose(1011);
-    await new Promise((r) => setImmediate(r));
-    assert.equal(h.sockets.length, 3, 'twice at most');
-    assert.equal(h.updates.length, 1, 'then the call ends');
-  });
-
-  it('a drop before any handle: a fresh connection asks the caller to repeat', async () => {
-    const h = harness(OPEN);
-    await h.s.start('MZ1', ids);
-    h.gem().onOpen();
-    await h.gem().onMessage(JSON.stringify({ setupComplete: {} }));
-    await heard(h);
-    h.sockets[0].onClose(1011);
-    h.sockets[1].onOpen();
-    await h.sockets[1].onMessage(JSON.stringify({ setupComplete: {} }));
-    assert.match(h.sentToGemini.filter((m) => m.clientContent).at(-1).clientContent.turns[0].parts[0].text, /^The line dropped.*repeat/s);
-  });
-
-  it('the caller answered quietly but Gemini heard it (its transcription): no re-ask, so the AI does not repeat its question', async () => {
-    const clock = { t: Date.parse('2026-10-22T15:00:00Z') };
-    const h = harness(OPEN, () => [], clock);
-    await h.s.start('MZ1', ids);
-    h.gem().onOpen();
-    assert.deepEqual(h.sentToGemini[0].setup.inputAudioTranscription, {});
-    await h.gem().onMessage(JSON.stringify({ setupComplete: {} }));
-    await heard(h);
-    await talked(h); // "With Erfan, right?"
-    const silent = Buffer.alloc(160, 0xff).toString('base64');
-    clock.t += 1500; await h.gem().onMessage(JSON.stringify({ serverContent: { inputTranscription: { text: 'بله' } } }));
-    clock.t += 6000; h.s.fromCaller(silent);
-    assert.ok(!h.logs.some(([e]) => e === 'reask'), 'the caller answered: no re-ask');
-  });
-
-  it('a speakerphone voice (quieter than a handset) still counts as the caller speaking: no re-ask over it', async () => {
-    const clock = { t: Date.parse('2026-10-22T15:00:00Z') };
-    const h = harness(OPEN, () => [], clock);
-    await h.s.start('MZ1', ids);
-    h.gem().onOpen();
-    await h.gem().onMessage(JSON.stringify({ setupComplete: {} }));
-    await heard(h);
-    const level = (v: number) => { const b = Buffer.alloc(320); for (let i = 0; i < 160; i++) b.writeInt16LE(i % 2 ? v : -v, i * 2); return pcm16ToMulaw(b).toString('base64'); };
-    for (let i = 0; i < 6; i++) { clock.t += 1000; h.s.fromCaller(level(1000)); } // 6 s of a quiet "I'd like an appointment"
-    assert.ok(!h.logs.some(([e]) => e === 'reask'), 'no re-ask while the caller speaks');
   });
 
   it('no re-ask while a tool runs or after the goodbye', async () => {
