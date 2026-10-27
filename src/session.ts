@@ -45,7 +45,7 @@ const SILENCE_NUDGE_MS = 15000; // after both re-asks the caller still says noth
 const REASK_MS = 5000; // the AI asked and the caller says nothing this long: the AI asks again (callers do not wait in silence)
 const REASK = 'The caller has not answered for about 5 seconds. Say out loud now only your last question again, short, in the caller\'s language (after the opening: just "How can I help you?"). Add nothing else: never say they have not answered.';
 const REASK_OFFER = 'The caller still has not answered. Ask one short question only, nothing else: if a booking is not finished, "Shall I connect you to the barber, or leave a message for them?" (offer to connect only if the salon is open now; otherwise only the message); if the booking is done, "Anything else?"; otherwise just "How can I help you?" again. Then wait for the answer.';
-const MESSAGE_DONE = 'The message is passed on. Now, in one short answer, tell the caller the barber will get their message and get back to them, then say goodbye (only once in this call), and call end_call.';
+const MESSAGE_DONE = 'The message is passed on. If you have not told the caller yet, tell them in one short answer that the barber will get their message and get back to them, and say goodbye. If you already said it, say nothing more. Then call end_call.';
 const OPENING_MAX_MS = 20000; // Twilio never confirmed the opening was played: the caller is heard anyway after this
 const SPEECH_PEAK = 1500; // of 32767: louder than the line's background noise
 const SILENCE_NUDGE = 'The caller has not answered at all. Thank them for calling, say they are welcome to call again to book their appointment, then call end_call. Say it in the caller\'s last language.';
@@ -154,7 +154,7 @@ export class CallSession {
           // a short pause before the AI answers; default sensitivity so a quiet caller is heard
           // the plain setting is the retry after Gemini refused the full one (1007)
           // the AI's words as text (outputAudioTranscription): to catch a "booked" no tool confirmed
-          ...(plain ? {} : { realtimeInputConfig: { automaticActivityDetection: { silenceDurationMs: 600 } }, contextWindowCompression: { slidingWindow: {} }, outputAudioTranscription: {} }),
+          ...(plain ? {} : { realtimeInputConfig: { automaticActivityDetection: { silenceDurationMs: 600 } }, contextWindowCompression: { slidingWindow: {} }, outputAudioTranscription: {}, inputAudioTranscription: {} }),
           systemInstruction: { parts: [{ text: fillPrompt(this.deps.prompt, this.variables) + this.openingNote() }] },
           // Gemini sends handles to resume this conversation in a new connection (after an internal error)
           sessionResumption: this.resumeHandle ? { handle: this.resumeHandle } : {},
@@ -361,6 +361,13 @@ export class CallSession {
         }
       }
       if (!this.openingHeard) void this.startOpening();
+    }
+    // Gemini heard the caller (inputAudioTranscription): they answered, even if too quietly for our meter,
+    // so no re-ask now (a re-ask after an answer made the AI repeat its question)
+    const heard = m.serverContent?.inputTranscription?.text;
+    if (typeof heard === 'string' && heard.trim()) {
+      this.aiWaitingSince = 0;
+      this.lastLoudAt = this.deps.now().getTime();
     }
     const said = m.serverContent?.outputTranscription?.text;
     if (typeof said === 'string' && said) this.checkClaim(said);
