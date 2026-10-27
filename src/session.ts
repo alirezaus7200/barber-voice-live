@@ -27,6 +27,8 @@ export type SessionDeps = {
 
 const TRANSFER_DELAY_MS = 4000; // the AI says "connecting you now" first
 const LANGUAGE_NAMES: Record<string, string> = { en: 'English', es: 'Spanish', fa: 'Persian (Farsi)' };
+const WAIT_RESTART_MS = 8000; // the AI has been quiet this long with nothing running: the silence count starts again
+const CALLER_PAUSE_MS = 3000; // ... once the caller has been quiet this long
 const OPENING_AUDIO_WAIT_MS = 4000; // the ready-made opening is late: Gemini says it instead
 const GOODBYE_MAX_MS = 15000; // safety: hang up even if the goodbye never completes
 const TIME_WARNING_S = 40; // seconds before the call cap when the AI is told to wrap up (enough to take a message)
@@ -55,7 +57,10 @@ export class CallSession {
   private toolAnsweredAt = 0; // when the last tool answer went to Gemini, until it speaks again
   private muted = false; // the goodbye turn is over: no more AI audio for the caller (no second goodbye)
   private aiWaitingSince = 0; // the AI finished a turn and waits for the caller (0: it does not)
-  private reasks = 0; // re-asks since the caller last spoke (at most 2)
+  private reasks = 0; // re-asks since the AI last answered the caller (at most 2)
+  private lastAiAudioAt = 0;
+  private lastLoudAt = 0;
+  private toolsRunning = 0;
   private hangUpWhenSaid = false;
   private outcome = false; // a booking, a message or a transfer happened in this call
   private refusedEnd = false; // the first early end_call is refused once, so the AI asks again
@@ -155,9 +160,17 @@ export class CallSession {
       const now = this.deps.now().getTime();
       const pcm = mulawToPcm16(Buffer.from(payloadB64, 'base64'));
       // silence counts only while the AI waits for an answer (never while it thinks, runs a tool or speaks)
+      // the AI is quiet, no tool runs and the caller is quiet, but no wait is counted (e.g. the AI was cut
+      // off, or never answered): count again, so the line is never silent for good
+      if (!this.aiWaitingSince && !this.toolsRunning && !this.hangUpWhenSaid
+          && now - this.lastAiAudioAt > WAIT_RESTART_MS && now - this.lastLoudAt > CALLER_PAUSE_MS) {
+        this.aiWaitingSince = now;
+        this.deps.log('wait_restarted', {});
+      }
       if (peakOf(pcm) > SPEECH_PEAK) {
+        // a loud line (the caller, or noise and echo) pauses the count; only the AI answering resets the re-asks
         this.aiWaitingSince = 0;
-        this.reasks = 0;
+        this.lastLoudAt = now;
       } else if (this.aiWaitingSince && now - this.aiWaitingSince > REASK_MS && this.reasks < 2 && !this.hangUpWhenSaid) {
         this.reasks += 1;
         if (this.nudgePending) this.deps.log('nudge_unanswered', {}); // Gemini said nothing to the last one
@@ -267,6 +280,7 @@ export class CallSession {
     for (const part of m.serverContent?.modelTurn?.parts ?? []) {
       if (part?.inlineData?.data && this.muted) continue;
       if (part?.inlineData?.data) {
+        this.lastAiAudioAt = this.deps.now().getTime();
         this.aiWaitingSince = 0;
         this.turnAudio = true;
         this.openingSpoken = true;
@@ -312,6 +326,16 @@ export class CallSession {
   }
 
   private async runTools(calls: { id: string; name: string; args?: unknown }[]) {
+    this.toolsRunning++;
+    try {
+      await this.runToolsNow(calls);
+    } finally {
+      this.toolsRunning--;
+      this.lastAiAudioAt = this.deps.now().getTime(); // Gemini now answers the tool: give it time to speak
+    }
+  }
+
+  private async runToolsNow(calls: { id: string; name: string; args?: unknown }[]) {
     const responses: { id: string; name: string; response: unknown }[] = [];
     if (!this.openingSpoken) {
       // e.g. previous_visit_reminder before a word was said: the caller would wait in silence and miss the disclosure
