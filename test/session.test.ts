@@ -223,7 +223,7 @@ describe('a call', () => {
     assert.ok(!h.logs.some(([e]) => e === 'silence_nudge'));
   });
 
-  it('the AI asked and the caller says nothing for 7 s: it asks again; still nothing: the barber or a message', async () => {
+  it('the AI asked and the caller says nothing for 5 s: it asks again; still nothing: the barber or a message', async () => {
     const clock = { t: Date.parse('2026-10-22T15:00:00Z') };
     const h = harness(OPEN, () => [], clock);
     await h.s.start('MZ1', ids);
@@ -236,10 +236,10 @@ describe('a call', () => {
     await h.gem().onMessage(JSON.stringify({ serverContent: { turnComplete: true } }));
     assert.deepEqual(h.sentToTwilio.at(-1), { event: 'mark', streamSid: 'MZ1', mark: { name: 'ai-turn' } }, 'Twilio says when the question has been played');
     clock.t += 4000; h.s.played(); // the question took 4 s to play: the wait starts now
-    clock.t += 6000; h.s.fromCaller(silent);
-    assert.equal(said().length, 1, 'only 6 s since the question was heard');
+    clock.t += 4000; h.s.fromCaller(silent);
+    assert.equal(said().length, 1, 'only 4 s since the question was heard');
     clock.t += 2000; h.s.fromCaller(silent);
-    assert.match(said()[1], /7 seconds.*question again/s);
+    assert.match(said()[1], /5 seconds.*question again/s);
     clock.t += 8000; h.s.fromCaller(silent);
     assert.equal(said().length, 2, 'the AI has not said the re-ask yet: no second one');
     await h.gem().onMessage(JSON.stringify({ serverContent: { turnComplete: true } }));
@@ -315,23 +315,27 @@ describe('a call', () => {
     assert.deepEqual(h.logs.filter(([e]) => e === 'gemini_reply'), [['gemini_reply', { ms: 9000 }]]);
   });
 
-  it('goodbye said, then end_call: Gemini\'s second goodbye never reaches the caller; the call ends when the first is played', async () => {
+  it('end_call mid-sentence: the rest of the goodbye still plays; a later goodbye turn never does; the call ends when it was played', async () => {
     const h = harness(OPEN, (list) => list.map((t) => ({ toolCallId: t.id, name: t.name, result: '{"ok":true}' })));
     await h.s.start('MZ1', ids);
     h.gem().onOpen();
     await h.gem().onMessage(JSON.stringify({ setupComplete: {} }));
     await heard(h);
-    await h.gem().onMessage(JSON.stringify({ toolCall: { functionCalls: [{ id: 'b1', name: 'book_appointment', args: {} }] } }));
+    await h.gem().onMessage(JSON.stringify({ toolCall: { functionCalls: [{ id: 'm1', name: 'take_message', args: { message: 'x' } }] } }));
     await new Promise((r) => setImmediate(r));
-    await speak(h); // "Booked ... Goodbye."
+    await speak(h); // "Your message is passed on, they will..."
     await h.gem().onMessage(JSON.stringify({ toolCall: { functionCalls: [{ id: 'e1', name: 'end_call' }] } }));
     await new Promise((r) => setImmediate(r));
     assert.match(h.sentToGemini.at(-1).toolResponse.functionResponses[0].response.note, /Say nothing more/);
+    const media = () => h.sentToTwilio.filter((m) => m.event === 'media').length;
+    const before = media();
+    await speak(h); // "...call you back. Goodbye." (same turn, after the tool call)
+    assert.equal(media(), before + 1, 'the end of the sentence is not cut');
+    await h.gem().onMessage(JSON.stringify({ serverContent: { turnComplete: true } }));
     assert.deepEqual(h.sentToTwilio.at(-1), { event: 'mark', streamSid: 'MZ1', mark: { name: 'goodbye' } });
-    const media = h.sentToTwilio.filter((m) => m.event === 'media').length;
-    await speak(h); // Gemini says goodbye again
-    assert.equal(h.sentToTwilio.filter((m) => m.event === 'media').length, media, 'the second goodbye is dropped');
-    assert.equal(h.updates.length, 0);
+    await speak(h); // a second goodbye in a new turn
+    assert.equal(media(), before + 1, 'a second goodbye is dropped');
+    assert.equal(h.updates.length, 0, 'not hung up before Twilio played the goodbye');
     h.s.played('goodbye');
     await new Promise((r) => setImmediate(r));
     assert.equal(h.updates.length, 1, 'hung up once the goodbye was played');
@@ -364,14 +368,12 @@ describe('a call', () => {
     await new Promise((r) => setImmediate(r));
     await h.gem().onMessage(JSON.stringify({ toolCall: { functionCalls: [{ id: 'f1b', name: 'end_call' }] } })); // the second one is accepted
     await new Promise((r) => setImmediate(r));
-    const before = h.timers.length;
     await h.gem().onMessage(JSON.stringify({ serverContent: { turnComplete: true } }));
     await new Promise((r) => setImmediate(r));
-    const hangUpTimer = h.timers.slice(before).find((t) => t.ms === 1500);
-    assert.ok(hangUpTimer, 'hang up 1.5 s after the goodbye turn completes');
-    hangUpTimer!.fn();
+    assert.equal(h.updates.length, 0, 'the goodbye may still be playing at Twilio');
+    h.s.played('goodbye');
     await new Promise((r) => setImmediate(r));
-    assert.equal(h.updates.length, 1, 'the line is hung up once');
+    assert.equal(h.updates.length, 1, 'the line is hung up once, when the goodbye was played');
   });
 
   it('Gemini refuses the session at start (1007): the same session is opened once more, the opening is said again, the call is not dropped', async () => {
