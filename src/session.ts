@@ -2,7 +2,7 @@
 // for everything about the salon. Gemini hears and speaks every language itself, so the caller may
 // switch language at any time. The salon, the caller and the call id come from Twilio (signed), never
 // from what anyone says. Timers and sockets are passed in, so the whole flow runs in tests.
-import { geminiToPhone, mulawToPcm16, phoneToGemini } from './audio.ts';
+import { geminiToPhone, mulawToPcm16, pcm16ToMulaw, phoneToGemini } from './audio.ts';
 import { fillPrompt, type CallIds, type CoreClient } from './core.ts';
 import { CORE_TOOL_NAMES, geminiTools } from './tools.ts';
 import { dialTwiml, hangupTwiml, sayTwiml } from './twilio.ts';
@@ -47,7 +47,7 @@ const REASK = 'The caller has not answered for about 5 seconds. Say out loud now
 const REASK_OFFER = 'The caller still has not answered. Ask one short question only, nothing else: if a booking is not finished, "Shall I connect you to the barber, or leave a message for them?" (offer to connect only if the salon is open now; otherwise only the message); if the booking is done, "Anything else?"; otherwise just "How can I help you?" again. Then wait for the answer.';
 const MESSAGE_DONE = 'The message is passed on. If you have not told the caller yet, tell them in one short answer that the barber will get their message and get back to them, and say goodbye. If you already said it, say nothing more. Then call end_call.';
 const OPENING_MAX_MS = 20000; // Twilio never confirmed the opening was played: the caller is heard anyway after this
-const SPEECH_PEAK = 1500; // of 32767: louder than the line's background noise
+const SPEECH_PEAK = 700; // of 32767: a voice, even on a speakerphone (quieter than a handset); above the line's hiss
 const SILENCE_NUDGE = 'The caller has not answered at all. Thank them for calling, say they are welcome to call again to book their appointment, then call end_call. Say it in the caller\'s last language.';
 
 export class CallSession {
@@ -203,11 +203,14 @@ export class CallSession {
       const now = this.deps.now().getTime();
       let pcm = mulawToPcm16(Buffer.from(payloadB64, 'base64'));
       // speakerphone echo: while the AI's words still play at the caller (and a moment after), only a voice
-      // clearly louder than the echo gets through; the rest reaches Gemini as silence, so the AI does not
-      // hear itself, stop and start its sentence again
+      // clearly louder than the echo gets through; the rest is turned down about 24 dB, so the AI does not
+      // hear itself, stop and start its sentence again. Turned down, never digital zeros: a stream of
+      // exact zeros is not what a phone line sends (Gemini failed with 1011 "Internal error" on it)
       if (now < this.playbackUntil + ECHO_HOLD_MS && peakOf(pcm) < BARGE_IN_PEAK) {
-        payloadB64 = Buffer.alloc(Buffer.from(payloadB64, 'base64').length, 0xff).toString('base64');
-        pcm = mulawToPcm16(Buffer.from(payloadB64, 'base64'));
+        const quiet = Buffer.alloc(pcm.length);
+        for (let i = 0; i + 1 < pcm.length; i += 2) quiet.writeInt16LE(Math.trunc(pcm.readInt16LE(i) / 16), i);
+        pcm = quiet;
+        payloadB64 = pcm16ToMulaw(quiet).toString('base64');
       }
       // silence counts only while the AI waits for an answer (never while it thinks, runs a tool or speaks)
       // the AI is quiet, no tool runs and the caller is quiet, but no wait is counted (e.g. the AI was cut
