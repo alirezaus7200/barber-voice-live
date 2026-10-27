@@ -33,7 +33,7 @@ const TIME_NUDGE = 'About 40 seconds are left in this call. If a booking is not 
 const SILENCE_NUDGE_MS = 15000; // after both re-asks the caller still says nothing this long: the AI thanks them and ends the call
 const REASK_MS = 5000; // the AI asked and the caller says nothing this long: the AI asks again (callers do not wait in silence)
 const REASK = 'The caller has not answered for about 5 seconds. Say only your last question again, short, in the caller\'s language (after the opening: just "How can I help you?"). Add nothing else: never say they have not answered.';
-const REASK_OFFER = 'The caller still has not answered. Ask one short question only, nothing else: if a booking is not finished, "Shall I connect you to the barber, or leave a message for them?" (offer to connect only if the salon is open now; otherwise only the message); if nothing was asked about yet, "Would you like to book an appointment?"; if the booking is done, "Anything else?". Then wait for the answer.';
+const REASK_OFFER = 'The caller still has not answered. Ask one short question only, nothing else: if a booking is not finished, "Shall I connect you to the barber, or leave a message for them?" (offer to connect only if the salon is open now; otherwise only the message); if the booking is done, "Anything else?"; otherwise just "How can I help you?" again. Then wait for the answer.';
 const MESSAGE_DONE = 'The message is passed on. Now, in one short answer, tell the caller the barber will get their message and get back to them, then say goodbye (only once in this call), and call end_call.';
 const OPENING_MAX_MS = 20000; // Twilio never confirmed the opening was played: the caller is heard anyway after this
 const SPEECH_PEAK = 1500; // of 32767: louder than the line's background noise
@@ -168,6 +168,10 @@ export class CallSession {
         this.deps.log('silence_nudge', { silentSeconds: Math.round((now - this.aiWaitingSince) / 1000) });
         this.aiWaitingSince = 0;
         this.nudgePending = true;
+        // this goodbye ends the call, whether or not the AI also calls end_call: hang up once it was played
+        this.endedReason = 'silence-timed-out';
+        this.hangUpWhenSaid = true;
+        this.timers.push(this.deps.setTimer(GOODBYE_MAX_MS, () => void this.hangUp()));
         this.gemini.send(JSON.stringify({ clientContent: { turns: [{ role: 'user', parts: [{ text: SILENCE_NUDGE }] }], turnComplete: true } }));
       }
       this.gemini.send(JSON.stringify({ realtimeInput: { audio: { data: phoneToGemini(payloadB64), mimeType: 'audio/pcm;rate=16000' } } }));

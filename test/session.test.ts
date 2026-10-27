@@ -198,6 +198,13 @@ describe('a call', () => {
     assert.equal(said().length, 4, 'the opening, 2 re-asks, one goodbye');
     assert.match(said()[3], /not answered at all.*call again.*end_call/s);
     assert.deepEqual(h.logs.find(([e]) => e === 'silence_nudge'), ['silence_nudge', { silentSeconds: 16 }]);
+    // the goodbye ends the call at once, even if the AI never calls end_call
+    await aiSays();
+    assert.deepEqual(h.sentToTwilio.at(-1), { event: 'mark', streamSid: 'MZ1', mark: { name: 'goodbye' } });
+    assert.equal(h.updates.length, 0);
+    h.s.played('goodbye');
+    await new Promise((r) => setImmediate(r));
+    assert.equal(h.updates.length, 1, 'hung up as soon as the goodbye was played');
   });
 
   it('a quiet caller the AI answers, or a long tool run, is never taken for silence (no goodbye mid-booking)', async () => {
