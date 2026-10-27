@@ -33,7 +33,10 @@ const CALLER_PAUSE_MS = 3000; // ... once the caller has been quiet this long
 const OPENING_AUDIO_WAIT_MS = 4000; // the ready-made opening is late: Gemini says it instead
 const GOODBYE_MAX_MS = 15000; // safety: hang up even if the goodbye never completes
 const TIME_WARNING_S = 40; // seconds before the call cap when the AI is told to wrap up (enough to take a message)
-const TIME_NUDGE = 'About 40 seconds are left in this call. If a booking is not finished, ask the one question still missing, short, and finish it now. If it cannot be finished, ask the caller: shall I connect you to the barber, or take a message for the barber? (Offer to connect them only if the salon is open now; otherwise offer only the message.) Then stop and wait for the answer. If they want a message, take it with take_message, then say a short goodbye in the caller\'s language and call end_call. Never say goodbye in the same turn as a question.';
+const TIME_NUDGE = 'About 40 seconds are left in this call. If the caller already chose a time: read it back and, after their yes, call book_appointment now. Never say it is booked unless book_appointment answered ok. If it cannot be finished, ask the caller: shall I connect you to the barber, or take a message for the barber? (Offer to connect them only if the salon is open now; otherwise offer only the message.) Then stop and wait for the answer. If they want a message, take it with take_message, then say a short goodbye in the caller\'s language and call end_call. Never say goodbye in the same turn as a question.';
+// words that say something was booked, cancelled or moved (en, es, fa): never true before a tool said so (hard rule 8)
+const DONE_CLAIM = /\b(is booked|are booked|you're booked|you are booked|booked you|is all set|has been (booked|cancel+ed|moved|rescheduled)|is cancel+ed|(qued[oó]|est[aá]|ya est[aá]) (reservad[ao]|agendad[ao]|confirmad[ao]|cancelad[ao])|ha sido (reservad[ao]|cancelad[ao]))\b|ثبت شد|رزرو شد|رزرو کردم|ثبت کردم|لغو شد|جابجا شد/i;
+const FALSE_CLAIM = 'Correction: nothing has been booked, cancelled or moved in this call: no tool answered ok. Tell the caller right away, in their language, that it is not done yet. Then read the appointment back, and after their yes call book_appointment (or the tool they need). Never say it is done before the tool answers ok.';
 const SILENCE_NUDGE_MS = 15000; // after both re-asks the caller still says nothing this long: the AI thanks them and ends the call
 const REASK_MS = 5000; // the AI asked and the caller says nothing this long: the AI asks again (callers do not wait in silence)
 const REASK = 'The caller has not answered for about 5 seconds. Say out loud now only your last question again, short, in the caller\'s language (after the opening: just "How can I help you?"). Add nothing else: never say they have not answered.';
@@ -59,7 +62,9 @@ export class CallSession {
   private muted = false; // the goodbye turn is over: no more AI audio for the caller (no second goodbye)
   private aiWaitingSince = 0; // the AI finished a turn and waits for the caller (0: it does not)
   private reasks = 0; // re-asks since the AI last answered the caller (at most 2; 1 before the caller ever spoke)
-  private talked = false; // the AI has answered the caller once (a conversation started)
+  private talked = false;
+  private turnText = ''; // what the AI said in this turn (transcription)
+  private falseClaims = 0; // "booked" with no tool ok: corrected (at most twice a call) // the AI has answered the caller once (a conversation started)
   private lastAiAudioAt = 0;
   private lastLoudAt = 0;
   private toolsRunning = 0;
@@ -138,7 +143,8 @@ export class CallSession {
           generationConfig: { responseModalities: ['AUDIO'], speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: this.deps.voice } } } },
           // a short pause before the AI answers; default sensitivity so a quiet caller is heard
           // the plain setting is the retry after Gemini refused the full one (1007)
-          ...(plain ? {} : { realtimeInputConfig: { automaticActivityDetection: { silenceDurationMs: 600 } }, contextWindowCompression: { slidingWindow: {} } }),
+          // the AI's words as text (outputAudioTranscription): to catch a "booked" no tool confirmed
+          ...(plain ? {} : { realtimeInputConfig: { automaticActivityDetection: { silenceDurationMs: 600 } }, contextWindowCompression: { slidingWindow: {} }, outputAudioTranscription: {} }),
           systemInstruction: { parts: [{ text: fillPrompt(this.deps.prompt, this.variables) + this.openingNote() }] },
           tools: geminiTools(),
         },
@@ -270,6 +276,18 @@ export class CallSession {
     this.deps.log('start_timing', { step: name, ms: this.deps.now().getTime() - this.t0, retried: this.retried });
   }
 
+  /** The AI said something was booked (cancelled, moved) but no tool answered ok: it must correct itself now. */
+  private checkClaim(text: string) {
+    this.turnText = (this.turnText + text).slice(-600);
+    if (this.outcome || this.falseClaims >= 2 || !DONE_CLAIM.test(this.turnText)) return;
+    this.falseClaims++;
+    this.turnText = '';
+    this.deps.log('false_claim_corrected', {});
+    // the call does not end on it: the next end_call is refused until something really happened
+    this.refusedEnd = false;
+    this.gemini?.send(JSON.stringify({ clientContent: { turns: [{ role: 'user', parts: [{ text: FALSE_CLAIM }] }], turnComplete: true } }));
+  }
+
   /** Before the caller ever spoke the opening already asked "How can I help you?": one re-ask is enough. */
   private maxReasks(): number {
     return this.talked ? 2 : 1;
@@ -297,6 +315,8 @@ export class CallSession {
       this.ready = true;
       if (!this.openingHeard) void this.startOpening();
     }
+    const said = m.serverContent?.outputTranscription?.text;
+    if (typeof said === 'string' && said) this.checkClaim(said);
     for (const part of m.serverContent?.modelTurn?.parts ?? []) {
       if (part?.inlineData?.data && this.muted) continue;
       if (part?.inlineData?.data) {
@@ -326,6 +346,7 @@ export class CallSession {
       return;
     }
     if (m.serverContent?.turnComplete) {
+      this.turnText = '';
       this.turnAudio = false;
       this.nudgePending = false;
       if (!this.hangUpWhenSaid) {
