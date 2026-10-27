@@ -36,6 +36,11 @@ function harness(startAnswer: any, toolAnswer: (list: any[]) => any[] = () => []
 async function speak(h: ReturnType<typeof harness>) {
   await h.gem().onMessage(JSON.stringify({ serverContent: { modelTurn: { parts: [{ inlineData: { mimeType: 'audio/pcm;rate=24000', data: Buffer.alloc(480).toString('base64') } }] } } }));
 }
+// the caller spoke once and the AI answered them: a conversation has started (re-asks: up to 2)
+async function talked(h: ReturnType<typeof harness>) {
+  await speak(h);
+  await h.gem().onMessage(JSON.stringify({ serverContent: { turnComplete: true } }));
+}
 async function heard(h: ReturnType<typeof harness>) {
   await h.gem().onMessage(JSON.stringify({ serverContent: { modelTurn: { parts: [{ inlineData: { mimeType: 'audio/pcm;rate=24000', data: Buffer.alloc(480).toString('base64') } }] } } }));
   await h.gem().onMessage(JSON.stringify({ serverContent: { turnComplete: true } }));
@@ -182,6 +187,7 @@ describe('a call', () => {
     h.gem().onOpen();
     await h.gem().onMessage(JSON.stringify({ setupComplete: {} }));
     await heard(h);
+    await talked(h);
     const silent = Buffer.alloc(160, 0xff).toString('base64'); // mu-law silence
     const said = () => h.sentToGemini.filter((m) => m.clientContent).map((m) => m.clientContent.turns[0].parts[0].text);
     const aiSays = async () => {
@@ -213,6 +219,24 @@ describe('a call', () => {
     assert.equal(h.updates.length, 1, 'hung up as soon as the goodbye was played');
   });
 
+  it('the caller never spoke: after the opening\'s "How can I help you?" only one re-ask, then the goodbye 8 s later', async () => {
+    const clock = { t: Date.parse('2026-10-22T15:00:00Z') };
+    const h = harness(OPEN, () => [], clock);
+    await h.s.start('MZ1', ids);
+    h.gem().onOpen();
+    await h.gem().onMessage(JSON.stringify({ setupComplete: {} }));
+    await heard(h);
+    const silent = Buffer.alloc(160, 0xff).toString('base64');
+    const said = () => h.sentToGemini.filter((m) => m.clientContent).map((m) => m.clientContent.turns[0].parts[0].text);
+    clock.t += 6000; h.s.fromCaller(silent);
+    assert.match(said()[1], /last question again/, 'one re-ask');
+    await speak(h); await h.gem().onMessage(JSON.stringify({ serverContent: { turnComplete: true } }));
+    clock.t += 6000; h.s.fromCaller(silent);
+    assert.equal(said().length, 2, 'no second re-ask');
+    clock.t += 3000; h.s.fromCaller(silent);
+    assert.match(said()[2], /not answered at all.*end_call/s, 'the goodbye');
+  });
+
   it('a quiet caller the AI answers, or a long tool run, is never taken for silence (no goodbye mid-booking)', async () => {
     const clock = { t: Date.parse('2026-10-22T15:00:00Z') };
     const h = harness(OPEN, () => [], clock);
@@ -220,6 +244,7 @@ describe('a call', () => {
     h.gem().onOpen();
     await h.gem().onMessage(JSON.stringify({ setupComplete: {} }));
     await heard(h);
+    await talked(h);
     const silent = Buffer.alloc(160, 0xff).toString('base64');
     const said = () => h.sentToGemini.filter((m) => m.clientContent).length;
     clock.t += 8000; h.s.fromCaller(silent); // re-ask 1 (the caller answered too quietly for the meter)
@@ -244,6 +269,7 @@ describe('a call', () => {
     h.gem().onOpen();
     await h.gem().onMessage(JSON.stringify({ setupComplete: {} }));
     await heard(h);
+    await talked(h);
     const silent = Buffer.alloc(160, 0xff).toString('base64');
     const loud = Buffer.alloc(160, 0x00).toString('base64');
     const said = () => h.sentToGemini.filter((m) => m.clientContent).map((m) => m.clientContent.turns[0].parts[0].text);
@@ -440,6 +466,7 @@ describe('a call', () => {
     h.gem().onOpen();
     await h.gem().onMessage(JSON.stringify({ setupComplete: {} }));
     await heard(h);
+    await talked(h);
     const silent = Buffer.alloc(160, 0xff).toString('base64');
     const said = () => h.sentToGemini.filter((m) => m.clientContent).length;
     clock.t += 6000; h.s.fromCaller(silent);
@@ -463,6 +490,7 @@ describe('a call', () => {
     h.gem().onOpen();
     await h.gem().onMessage(JSON.stringify({ setupComplete: {} }));
     await heard(h);
+    await talked(h);
     const silent = Buffer.alloc(160, 0xff).toString('base64');
     const loud = Buffer.alloc(160, 0x00).toString('base64');
     const said = () => h.sentToGemini.filter((m) => m.clientContent).length;
