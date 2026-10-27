@@ -28,6 +28,8 @@ export type SessionDeps = {
 const TRANSFER_DELAY_MS = 4000; // the AI says "connecting you now" first
 const LANGUAGE_NAMES: Record<string, string> = { en: 'English', es: 'Spanish', fa: 'Persian (Farsi)' };
 const FIRST_SILENCE_NUDGE_MS = 8000; // the caller never spoke: the goodbye comes this long after the one re-ask
+const ECHO_HOLD_MS = 400; // the echo of the AI's last words still comes back this long after they played
+const BARGE_IN_PEAK = 9000; // of 32767: a caller speaking over the AI, clearly louder than a speakerphone echo
 const WAIT_RESTART_MS = 8000; // the AI has been quiet this long with nothing running: the silence count starts again
 const CALLER_PAUSE_MS = 3000; // ... once the caller has been quiet this long
 const OPENING_AUDIO_WAIT_MS = 4000; // the ready-made opening is late: Gemini says it instead
@@ -63,6 +65,7 @@ export class CallSession {
   private aiWaitingSince = 0; // the AI finished a turn and waits for the caller (0: it does not)
   private reasks = 0; // re-asks since the AI last answered the caller (at most 2; 1 before the caller ever spoke)
   private talked = false;
+  private playbackUntil = 0; // when the AI audio sent to Twilio will have finished playing (ms)
   private turnText = ''; // what the AI said in this turn (transcription)
   private falseClaims = 0; // "booked" with no tool ok: corrected (at most twice a call) // the AI has answered the caller once (a conversation started)
   private lastAiAudioAt = 0;
@@ -178,7 +181,14 @@ export class CallSession {
   fromCaller(payloadB64: string) {
     if (this.ready && this.gemini && this.openingHeard) {
       const now = this.deps.now().getTime();
-      const pcm = mulawToPcm16(Buffer.from(payloadB64, 'base64'));
+      let pcm = mulawToPcm16(Buffer.from(payloadB64, 'base64'));
+      // speakerphone echo: while the AI's words still play at the caller (and a moment after), only a voice
+      // clearly louder than the echo gets through; the rest reaches Gemini as silence, so the AI does not
+      // hear itself, stop and start its sentence again
+      if (now < this.playbackUntil + ECHO_HOLD_MS && peakOf(pcm) < BARGE_IN_PEAK) {
+        payloadB64 = Buffer.alloc(Buffer.from(payloadB64, 'base64').length, 0xff).toString('base64');
+        pcm = mulawToPcm16(Buffer.from(payloadB64, 'base64'));
+      }
       // silence counts only while the AI waits for an answer (never while it thinks, runs a tool or speaks)
       // the AI is quiet, no tool runs and the caller is quiet, but no wait is counted (e.g. the AI was cut
       // off, or never answered): count again, so the line is never silent for good
@@ -229,6 +239,7 @@ export class CallSession {
         this.firstAudio = true;
         // ~1 s pieces; Twilio plays them in order
         for (let i = 0; i < audio.length; i += 10_664) {
+          this.playing(audio.slice(i, i + 10_664));
           this.twilio.send(JSON.stringify({ event: 'media', streamSid: this.streamSid, media: { payload: audio.slice(i, i + 10_664) } }));
         }
         this.twilio.send(JSON.stringify({ event: 'mark', streamSid: this.streamSid, mark: { name: 'opening' } }));
@@ -274,6 +285,12 @@ export class CallSession {
   /** Start-up timing: how long after Twilio's start each step came (the caller hears nothing until first_audio). */
   private step(name: string) {
     this.deps.log('start_timing', { step: name, ms: this.deps.now().getTime() - this.t0, retried: this.retried });
+  }
+
+  /** Audio sent to the caller (base64 mu-law 8 kHz: 8000 bytes a second): it plays after what is queued. */
+  private playing(b64: string) {
+    const ms = (Math.floor((b64.length * 3) / 4) / 8000) * 1000;
+    this.playbackUntil = Math.max(this.playbackUntil, this.deps.now().getTime()) + ms;
   }
 
   /** The AI said something was booked (cancelled, moved) but no tool answered ok: it must correct itself now. */
@@ -331,7 +348,11 @@ export class CallSession {
         } // the AI answers the caller (who may speak too quietly for the meter)
       }
       if (part?.inlineData?.data && !this.firstAudio) { this.firstAudio = true; this.step('first_audio'); }
-      if (part?.inlineData?.data) this.twilio.send(JSON.stringify({ event: 'media', streamSid: this.streamSid, media: { payload: geminiToPhone(part.inlineData.data, part.inlineData.mimeType) } }));
+      if (part?.inlineData?.data) {
+        const payload = geminiToPhone(part.inlineData.data, part.inlineData.mimeType);
+        this.playing(payload);
+        this.twilio.send(JSON.stringify({ event: 'media', streamSid: this.streamSid, media: { payload } }));
+      }
     }
     if (m.serverContent?.turnComplete && !this.openingHeard && !this.hangUpWhenSaid) {
       const said = this.turnAudio;
@@ -361,7 +382,10 @@ export class CallSession {
       }
     }
     // the caller spoke over the AI: drop what Twilio still has queued (never the opening)
-    if (m.serverContent?.interrupted && this.openingHeard) this.twilio.send(JSON.stringify({ event: 'clear', streamSid: this.streamSid }));
+    if (m.serverContent?.interrupted && this.openingHeard) {
+      this.twilio.send(JSON.stringify({ event: 'clear', streamSid: this.streamSid }));
+      this.playbackUntil = this.deps.now().getTime(); // nothing more plays
+    }
     if (m.toolCall?.functionCalls?.length) this.aiWaitingSince = 0; // a tool runs: the caller is not being asked
     if (m.toolCall?.functionCalls?.length) await this.runTools(m.toolCall.functionCalls);
   }
