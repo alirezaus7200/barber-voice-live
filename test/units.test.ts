@@ -102,6 +102,10 @@ describe('the booking steps in the prompt', () => {
     assert.ok(!/\bbarbers?\b/i.test(prompt.replace(/\{\{[a-z_]+\}\}|\b[a-z]+_barbers?\b|\bbarber_[a-z]+\b|barbería/g, '')), 'no "barber" left in the instructions');
     assert.ok(prompt.includes('asks for anything sexual or\n  inappropriate'));
     assert.ok(prompt.includes('Never give medical advice.'));
+    // a refusal is told in plain words before connect-or-message; a yes to the offer moves on to the day
+    assert.ok(prompt.includes('first tell the caller in one short, plain sentence why'));
+    assert.ok(prompt.includes('customer_limit: they already have the most upcoming'));
+    assert.ok(prompt.includes('never ask the offer again after a yes'));
     // a caller's hello is a greeting, not an answer ("سلام" right after the offer)
     assert.ok(prompt.includes('A greeting alone is\n  not an answer to anything'));
     // a long list of services: the AI looks one up by the caller's words, never guesses an id
