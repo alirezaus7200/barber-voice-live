@@ -105,7 +105,7 @@ describe('the booking steps in the prompt', () => {
     // a refusal is told in plain words before connect-or-message; a yes to the offer moves on to the day
     assert.ok(prompt.includes('first tell the caller in one short, plain sentence why'));
     assert.ok(prompt.includes('customer_limit: they already have the most upcoming'));
-    assert.ok(prompt.includes('never ask the offer again after a yes'));
+    assert.ok(prompt.includes('Do not ask whether they want the same'), 'a known caller is booked with the usual staff member: the first question is the day');
     // a caller's hello is a greeting, not an answer ("سلام" right after the offer)
     assert.ok(prompt.includes('A greeting alone is\n  not an answer to anything'));
     // a long list of services: the AI looks one up by the caller's words, never guesses an id
@@ -129,10 +129,10 @@ describe('the booking steps in the prompt', () => {
     const { readFileSync } = await import('node:fs');
     const prompt = readFileSync(new URL('../src/prompt.txt', import.meta.url), 'utf8');
     assert.ok(prompt.includes('{{known_caller}}'));
-    assert.ok(prompt.includes('your first question is its "offer", word for word'))
-    assert.ok(prompt.includes('Never ask "is your staff member <name>?"'), 'the usual staff member is suggested, not checked')
+    assert.ok(prompt.includes('your first answer is its "offer", word for word'))
+    assert.ok(prompt.includes('ask "is your staff member <name>?"'), 'the usual staff member is booked, not checked')
     assert.ok(prompt.includes("If there is more than one staff member, say the staff members'\n   names and ask which one they want."), 'a new caller hears the names');
-    assert.ok(prompt.includes('never ask "which staff member?" or "which\n   service?" first.'));
+    assert.ok(prompt.includes('never ask "which staff member?" or "which service?": assume the usual ones.'));
     assert.ok(prompt.includes('Never guess a name, a time, a staff member or a service.'));
   });
   it('no time is offered before check_availability was called in this call', async () => {
