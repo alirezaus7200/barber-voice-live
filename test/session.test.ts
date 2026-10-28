@@ -284,7 +284,8 @@ describe('a call', () => {
     assert.equal(said().length, 2, 'only 3 s after the re-ask');
     await speak(h); await h.gem().onMessage(JSON.stringify({ serverContent: { turnComplete: true } }));
     clock.t += 8000; h.s.fromCaller(silent);
-    assert.match(said()[2], /one short question only.*connect you to the barber, or leave a message.*only if the salon is open/s);
+    assert.match(said()[2], /ask your last question once more, in other short words, and give the choices.*«امروز، فردا، یا روز دیگه؟»/s);
+    assert.match(said()[2], /Only if a tool already said this booking cannot be done.*connect you to the barber, or leave a message.*only if the salon is open/s, 'connect or message only after a no');
     await h.gem().onMessage(JSON.stringify({ serverContent: { turnComplete: true } }));
     clock.t += 8000; h.s.fromCaller(silent);
     assert.equal(said().length, 3, 'at most 2 re-asks; then the 30 s silence rule ends the call');
