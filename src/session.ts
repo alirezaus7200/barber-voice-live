@@ -364,6 +364,9 @@ export class CallSession {
 
   private async runToolsNow(calls: { id: string; name: string; args?: unknown }[]) {
     const responses: { id: string; name: string; response: unknown }[] = [];
+    // every function call Gemini asks for, by name only (never the arguments: they hold the caller's data), so a
+    // call that offered times without check_availability shows in the logs
+    this.deps.log('tool_call', { tools: calls.map((c) => String(c.name).slice(0, 40)) });
     if (!this.openingSpoken) {
       // e.g. previous_visit_reminder before a word was said: the caller would wait in silence and miss the disclosure
       this.deps.log('tool_before_opening', { tools: calls.map((c) => c.name) });
@@ -402,7 +405,11 @@ export class CallSession {
         this.timers.push(this.deps.setTimer(GOODBYE_MAX_MS, () => void this.hangUp()));
         continue;
       }
-      if (!CORE_TOOL_NAMES.has(c.name)) { responses.push({ id: c.id, name: c.name, response: { ok: false, reason: 'unknown_tool' } }); continue; }
+      if (!CORE_TOOL_NAMES.has(c.name)) {
+        this.deps.log('tool_unknown', { tool: String(c.name).slice(0, 40) });
+        responses.push({ id: c.id, name: c.name, response: { ok: false, reason: 'unknown_tool' } });
+        continue;
+      }
       const raw = results.find((x) => x.toolCallId === c.id)?.result;
       let result: any = { ok: false, reason: 'system_error' };
       try { if (raw) result = JSON.parse(raw); } catch { /* keep system_error */ }
