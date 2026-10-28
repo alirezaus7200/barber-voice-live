@@ -23,6 +23,18 @@ export const CORE_TOOLS = [
     },
   },
   {
+    name: 'find_services',
+    description: 'Finds services by the words the caller used (e.g. "pedicure", "back massage"), in any language: ids, names, group, duration, price and who does each. Use it when the services are too many to be listed in the facts; never guess a service id.',
+    parameters: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'What the caller wants, in their words.' },
+        language,
+      },
+      required: ['query'],
+    },
+  },
+  {
     name: 'book_appointment',
     description: 'Books the slot after the caller clearly said yes to the read-back. Only say it is booked if ok is true.',
     parameters: {
