@@ -22,7 +22,7 @@ change, the four calls are run again in every locked language before it counts a
 
 | Language | Test 1 silence | Test 2 booking | Test 3 taken time | Test 4 message | Locked (revision) |
 |---|---|---|---|---|---|
-| Persian (fa-IR) | | | | | |
+| Persian (fa-IR) | ok (00085-vvb, 10-28) | | | | |
 | English (en) | | | | | |
 | Spanish (es) | | | | | |
 
