@@ -90,7 +90,7 @@ Right now it is: {{current_local_datetime}} ({{current_weekday}}) in the shop's 
 The next days: {{upcoming_days}}
 Opening hours: {{opening_hours}}
 Staff: {{staff_list}}              (name, id, which services each does)
-Services: {{services_list}}        (name in English and Spanish, [group], duration, price if shown; or only the groups when there are too many)
+Services: {{services_list}}        (names: in the call's language, English, Spanish; [group], duration, price if shown; only what someone here does; or only the groups when there are too many)
 Booking rules: {{booking_rules}}   (earliest booking, how far ahead, cancellation cutoff)
 What callers call a staff member here (say this word in the caller's language,
 never "staff member"): {{staff_word}}
