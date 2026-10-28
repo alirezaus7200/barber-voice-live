@@ -138,6 +138,14 @@ describe('the booking steps in the prompt', () => {
     assert.ok(name > 0 && consent > name && readBack > consent && booking > readBack, 'name, consent, read-back, booking');
     assert.ok(prompt.includes('so never ask after booking'), 'consent is recorded only in the booking call');
   });
+  it('short questions; the waiting phrase only right before a tool; a named day («فردا») is checked at once, never asked again', async () => {
+    const { readFileSync } = await import('node:fs');
+    const prompt = readFileSync(new URL('../src/prompt.txt', import.meta.url), 'utf8');
+    assert.ok(prompt.includes('Say it only right before a tool\n  call, never before a question; never before previous_visit_reminder'));
+    assert.ok(prompt.includes('One question at a time, without repeating back what the caller just\n  said or putting a name in front'));
+    assert.ok(prompt.includes('«فردا» tomorrow'));
+    assert.ok(prompt.includes('A day the caller named is never asked again ("Which day?"): call\n   check_availability for it at once.'));
+  });
   it('the known caller is greeted by first name and offered the usual barber and last services, once; noise is never guessed', async () => {
     const { readFileSync } = await import('node:fs');
     const prompt = readFileSync(new URL('../src/prompt.txt', import.meta.url), 'utf8');
