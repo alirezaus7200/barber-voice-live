@@ -505,6 +505,33 @@ describe('a call', () => {
     assert.equal(said(), 3, 're-ask 2: the noise did not reset the count');
   });
 
+  it('the caller answered quietly but Gemini heard it (its transcription): no re-ask, so the AI does not repeat its question', async () => {
+    const clock = { t: Date.parse('2026-10-22T15:00:00Z') };
+    const h = harness(OPEN, () => [], clock);
+    await h.s.start('MZ1', ids);
+    h.gem().onOpen();
+    assert.deepEqual(h.sentToGemini[0].setup.inputAudioTranscription, {});
+    await h.gem().onMessage(JSON.stringify({ setupComplete: {} }));
+    await heard(h);
+    await talked(h); // "With Erfan, right?"
+    const silent = Buffer.alloc(160, 0xff).toString('base64');
+    clock.t += 1500; await h.gem().onMessage(JSON.stringify({ serverContent: { inputTranscription: { text: 'بله' } } }));
+    clock.t += 6000; h.s.fromCaller(silent);
+    assert.ok(!h.logs.some(([e]) => e === 'reask'), 'the caller answered: no re-ask');
+  });
+
+  it('a speakerphone voice (quieter than a handset) still counts as the caller speaking: no re-ask over it', async () => {
+    const clock = { t: Date.parse('2026-10-22T15:00:00Z') };
+    const h = harness(OPEN, () => [], clock);
+    await h.s.start('MZ1', ids);
+    h.gem().onOpen();
+    await h.gem().onMessage(JSON.stringify({ setupComplete: {} }));
+    await heard(h);
+    const level = (v: number) => { const b = Buffer.alloc(320); for (let i = 0; i < 160; i++) b.writeInt16LE(i % 2 ? v : -v, i * 2); return pcm16ToMulaw(b).toString('base64'); };
+    for (let i = 0; i < 6; i++) { clock.t += 1000; h.s.fromCaller(level(1000)); } // 6 s of a quiet "I'd like an appointment"
+    assert.ok(!h.logs.some(([e]) => e === 'reask'), 'no re-ask while the caller speaks');
+  });
+
   it('no re-ask while a tool runs or after the goodbye', async () => {
     const clock = { t: Date.parse('2026-10-22T15:00:00Z') };
     const h = harness(OPEN, () => [], clock);

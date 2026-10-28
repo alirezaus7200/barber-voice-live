@@ -37,10 +37,10 @@ const TIME_NUDGE = 'About 40 seconds are left in this call. If the caller alread
 const SILENCE_NUDGE_MS = 15000; // after both re-asks the caller still says nothing this long: the AI thanks them and ends the call
 const REASK_MS = 5000; // the AI asked and the caller says nothing this long: the AI asks again (callers do not wait in silence)
 const REASK = 'The caller has not answered for about 5 seconds. Say out loud now only your last question again, short, in the caller\'s language (after the opening: just "How can I help you?"). Add nothing else: never say they have not answered.';
-const REASK_OFFER = 'The caller still has not answered. Ask one short question only, nothing else: if a booking is not finished, "Shall I connect you to the barber, or leave a message for them?" (offer to connect only if the salon is open now; otherwise only the message); if the booking is done, "Anything else?"; otherwise just "How can I help you?" again. Then wait for the answer.';
+const REASK_OFFER = 'The caller still has not answered. If they already said yes to your read-back, call book_appointment now instead. Otherwise ask one short question only, nothing else: if a booking is not finished, "Shall I connect you to the barber, or leave a message for them?" (offer to connect only if the salon is open now; otherwise only the message); if the booking is done, "Anything else?"; otherwise just "How can I help you?" again. Then wait for the answer.';
 const MESSAGE_DONE = 'The message is passed on. If you have not told the caller yet, tell them in one short answer that the barber will get their message and get back to them, and say goodbye. If you already said it, say nothing more. Then call end_call.';
 const OPENING_MAX_MS = 20000; // Twilio never confirmed the opening was played: the caller is heard anyway after this
-const SPEECH_PEAK = 1500; // of 32767: louder than the line's background noise
+const SPEECH_PEAK = 700; // of 32767: a voice, even on a speakerphone (quieter than a handset); above the line's hiss
 const SILENCE_NUDGE = 'The caller has not answered at all. Thank them for calling, say they are welcome to call again to book their appointment, then call end_call. Say it in the caller\'s last language.';
 
 export class CallSession {
@@ -138,7 +138,7 @@ export class CallSession {
           generationConfig: { responseModalities: ['AUDIO'], speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: this.deps.voice } } } },
           // a short pause before the AI answers; default sensitivity so a quiet caller is heard
           // the plain setting is the retry after Gemini refused the full one (1007)
-          ...(plain ? {} : { realtimeInputConfig: { automaticActivityDetection: { silenceDurationMs: 600 } }, contextWindowCompression: { slidingWindow: {} } }),
+          ...(plain ? {} : { realtimeInputConfig: { automaticActivityDetection: { silenceDurationMs: 600 } }, contextWindowCompression: { slidingWindow: {} }, inputAudioTranscription: {} }),
           systemInstruction: { parts: [{ text: fillPrompt(this.deps.prompt, this.variables) + this.openingNote() }] },
           tools: geminiTools(),
         },
@@ -292,6 +292,13 @@ export class CallSession {
     try { m = JSON.parse(text); } catch { return; }
     // Gemini says it will close the session soon (goAway): log why, so a short call can be explained
     if (m.goAway) this.deps.log('gemini_go_away', { timeLeft: String(m.goAway.timeLeft ?? '') });
+    // Gemini heard the caller (inputAudioTranscription): they answered, even if too quietly for our meter, so no
+    // re-ask now (a re-ask over a quiet "yes" made the AI ask again, or offer a message instead of booking)
+    const heardText = m.serverContent?.inputTranscription?.text;
+    if (typeof heardText === 'string' && heardText.trim()) {
+      this.aiWaitingSince = 0;
+      this.lastLoudAt = this.deps.now().getTime();
+    }
     if (m.setupComplete) {
       this.step('gemini_ready');
       this.ready = true;
