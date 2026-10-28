@@ -102,6 +102,11 @@ describe('the booking steps in the prompt', () => {
     assert.ok(!/\bbarbers?\b/i.test(prompt.replace(/\{\{[a-z_]+\}\}|\b[a-z]+_barbers?\b|\bbarber_[a-z]+\b|barbería/g, '')), 'no "barber" left in the instructions');
     assert.ok(prompt.includes('asks for anything sexual or\n  inappropriate'));
     assert.ok(prompt.includes('Never give medical advice.'));
+    // WhatsApp only when the salon sends it, asked once, any "no" or "I don't have it" is a no; a new caller's name first
+    assert.ok(prompt.includes('WhatsApp reminders: {{whatsapp_rule}}'));
+    assert.ok(prompt.includes('Never ask it twice in a call'));
+    assert.ok(prompt.includes('must say their name first'));
+    assert.ok(prompt.includes('name_needed: you still need their name'));
     // a refusal is told in plain words before connect-or-message; a yes to the offer moves on to the day
     assert.ok(prompt.includes('first tell the caller in one short, plain sentence why'));
     assert.ok(prompt.includes('customer_limit: they already have the most upcoming'));
@@ -116,11 +121,11 @@ describe('the booking steps in the prompt', () => {
   it('name, then WhatsApp consent, then a full read-back, all before book_appointment; never end before it answers', async () => {
     const { readFileSync } = await import('node:fs');
     const prompt = readFileSync(new URL('../src/prompt.txt', import.meta.url), 'utf8');
-    const name = prompt.indexOf("first get the caller's name");
-    const consent = prompt.indexOf('Before booking, ask once, short: "Shall we send you a WhatsApp reminder?"');
+    const name = prompt.indexOf('must say their name first');
+    const consent = prompt.indexOf('them, ask once, short, before the read-back');
     const readBack = prompt.indexOf('Then read it all back in one sentence, every time, even when each part was\n   already agreed one by one');
     assert.ok(prompt.includes('Never call book_appointment before this read-back.'));
-    assert.ok(prompt.includes("a known caller's first name counts: never ask it again"));
+    assert.ok(prompt.includes("A known caller's name is\n   on file: never ask it"));
     const book = prompt.indexOf('call book_appointment. Never end the call before it');
     assert.ok(name > 0 && consent > name && readBack > consent && book > readBack, 'name, consent, read-back, booking');
     assert.ok(prompt.includes('so never ask after booking'), 'consent is recorded only in the booking call');
@@ -165,7 +170,7 @@ describe('the booking steps in the prompt', () => {
     assert.ok(prompt.includes('Never stay silent while a tool runs.'));
     assert.ok(prompt.includes('call set_caller_language once'), 'the language is fixed as soon as it is known');
     assert.ok(prompt.includes('Never ask "morning, afternoon or evening?"'), 'the first free times are offered at once');
-    assert.ok(prompt.includes('A no to WhatsApp is not a no to the booking'));
+    assert.ok(prompt.includes('a no to WhatsApp is never a no to the booking'));
     assert.ok(prompt.includes('never ask the same question again'));
     assert.ok(prompt.includes('Never ask a\n  caller whose language is clear'), 'asked only when unsure');
     assert.ok(prompt.includes("that staff member's nearest free day"));
