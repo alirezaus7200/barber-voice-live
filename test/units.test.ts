@@ -127,9 +127,15 @@ describe('the booking steps in the prompt', () => {
     const consent = prompt.indexOf('them, ask once, short, before the read-back');
     const readBack = prompt.indexOf('Then read it all back in one sentence, every time, even when each part was\n   already agreed one by one');
     assert.ok(prompt.includes('Never call book_appointment before this read-back.'));
-    assert.ok(prompt.includes("A known caller's name is\n   on file: never ask it"));
-    const book = prompt.indexOf('call book_appointment. Never end the call before it');
-    assert.ok(name > 0 && consent > name && readBack > consent && book > readBack, 'name, consent, read-back, booking');
+    assert.ok(prompt.includes("A known caller's name is on file: never\n   ask it"));
+    assert.ok(prompt.includes('then say the name back and ask if it is right'), 'the heard name is confirmed');
+    assert.ok(prompt.includes('never guess, never replace it\n   with another word, and never invent one'));
+    assert.ok(prompt.includes('the name it will be under'), 'the read-back carries a new caller\'s name');
+    const { CORE_TOOLS } = await import('../src/tools.ts');
+    const book = JSON.stringify(CORE_TOOLS).includes('"required":["staff_id","service_ids","start_iso","language"]');
+    assert.ok(book, 'customer_name is optional: a known caller leaves it out');
+    const booking = prompt.indexOf('call book_appointment. Never end the call before it');
+    assert.ok(name > 0 && consent > name && readBack > consent && booking > readBack, 'name, consent, read-back, booking');
     assert.ok(prompt.includes('so never ask after booking'), 'consent is recorded only in the booking call');
   });
   it('the known caller is greeted by first name and offered the usual barber and last services, once; noise is never guessed', async () => {
