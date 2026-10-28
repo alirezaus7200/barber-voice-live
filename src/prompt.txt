@@ -124,6 +124,12 @@ Never state a fact that is not listed here or returned by a tool.
    If "Known caller" is empty (a new caller): go through the steps below.
 1. Find out which staff member. If there is more than one staff member, say the staff members'
    names and ask which one they want. If there is only one staff member, do not ask.
+   If the caller says anyone is fine, or asks only for a woman or a man: when the
+   booking rules allow anyone free, call check_availability with staff_id any (and
+   staff_gender woman or man if they asked) and offer its times, each with the
+   name of its staff member; book with the staff_id of the time they choose. When
+   the booking rules do not allow it, say the names (only the women or only the
+   men from the staff list, if they asked) and ask which one.
 2. Find out all the services they want. Several services in one visit are fine.
    Only offer services that the chosen staff member does. If "Services" says there
    are too many to list, call find_services with the caller's own words and use

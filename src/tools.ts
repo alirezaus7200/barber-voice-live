@@ -8,11 +8,12 @@ const language = { type: 'string', description: "The caller's language code, e.g
 export const CORE_TOOLS = [
   {
     name: 'check_availability',
-    description: 'Free start times for one staff member, a list of services and one day (salon time). Offer at most three. If that day is full, the same answer gives the staff member\'s next free day with its times and the other staff members free that day: offer those at once, never day by day.',
+    description: 'Free start times for one staff member, a list of services and one day (salon time). Offer at most three. If that day is full, the same answer gives the staff member\'s next free day with its times and the other staff members free that day: offer those at once, never day by day. With staff_id any, each time says whose it is: book with that staff_id.',
     parameters: {
       type: 'object',
       properties: {
-        staff_id: id,
+        staff_id: { type: 'string', description: 'A staff id from the facts, or any when the caller wants anyone free and the booking rules allow it.' },
+        staff_gender: { type: 'string', enum: ['woman', 'man'], description: 'Only with staff_id any: the caller asked for a woman or a man.' },
         service_ids: { type: 'array', items: id },
         date: { type: 'string', description: 'YYYY-MM-DD, in the salon calendar.' },
         time_window: { type: 'string', enum: ['morning', 'afternoon', 'evening', 'any'], description: 'Ask the caller: morning (before 12 PM), afternoon (12 to 5 PM) or evening (from 5 PM). any if they do not mind.' },
