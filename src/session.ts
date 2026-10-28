@@ -34,6 +34,12 @@ const OPENING_AUDIO_WAIT_MS = 4000; // the ready-made opening is late: Gemini sa
 const GOODBYE_MAX_MS = 15000; // safety: hang up even if the goodbye never completes
 const TIME_WARNING_S = 40; // seconds before the call cap when the AI is told to wrap up (enough to take a message)
 const TIME_NUDGE = 'About 40 seconds are left in this call. If the caller already chose a time: read it back and, after their yes, call book_appointment now. Never say it is booked unless book_appointment answered ok. If it cannot be finished, ask the caller: shall I connect you to the barber, or take a message for the barber? (Offer to connect them only if the salon is open now; otherwise offer only the message.) Then stop and wait for the answer. If they want a message, take it with take_message, then say a short goodbye in the caller\'s language and call end_call. Never say goodbye in the same turn as a question.';
+// words that say something was booked, cancelled or moved (en, es, fa): never true before a tool said so (hard rule 8)
+const DONE_CLAIM = /\b(is booked|are booked|you're booked|you are booked|booked you|is all set|has been (booked|cancel+ed|moved|rescheduled)|is cancel+ed|(qued[oó]|est[aá]|ya est[aá]) (reservad[ao]|agendad[ao]|confirmad[ao]|cancelad[ao])|ha sido (reservad[ao]|cancelad[ao]))\b|ثبت شد|رزرو شد|رزرو کردم|ثبت کردم|لغو شد|جابجا شد/i;
+const FALSE_CLAIM = 'Correction: nothing has been booked, cancelled or moved in this call: no tool answered ok. Tell the caller right away, in their language, that it is not done yet. Then read the appointment back, and after their yes call book_appointment (or the tool they need). Never say it is done before the tool answers ok.';
+// a time of day said out loud (en, es, fa): an offer of times is only real after check_availability answered
+const TIME_SAID = /\b\d{1,2}[:.]\d{2}\b|[۰-۹]{1,2}[:٫][۰-۹]{2}|\b\d{1,2}\s?(a\.?m\.?|p\.?m\.?)(?![a-z])|ساعت\s*([\d۰-۹]|یک|دو|سه|چهار|پنج|شش|هفت|هشت|نه|ده|یازده|دوازده)|\ba las (\d|una|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez|once|doce)\b/i;
+const UNCHECKED_TIMES = 'Correction: the times you just said did not come from check_availability (it has not answered in this call), so they may not be free. Tell the caller in one short sentence, in their language, that you will check, then call check_availability now and offer only the times it returns.';
 const SILENCE_NUDGE_MS = 15000; // after both re-asks the caller still says nothing this long: the AI thanks them and ends the call
 const REASK_MS = 5000; // the AI asked and the caller says nothing this long: the AI asks again (callers do not wait in silence)
 const REASK = 'The caller has not answered for about 5 seconds. Say out loud now only your last question again, short, in the caller\'s language (after the opening: just "How can I help you?"). Add nothing else: never say they have not answered.';
@@ -60,6 +66,11 @@ export class CallSession {
   private aiWaitingSince = 0; // the AI finished a turn and waits for the caller (0: it does not)
   private reasks = 0; // re-asks since the AI last answered the caller (at most 2; 1 before the caller ever spoke)
   private talked = false; // the AI has answered the caller once (a conversation started)
+  private turnText = ''; // what the AI said in this turn (output transcription)
+  private turnTool = false; // the AI asked for a tool in this turn
+  private falseClaims = 0; // "booked" with no tool ok: corrected (at most twice a call)
+  private timesChecked = false; // check_availability (or find_my_appointments) answered ok in this call
+  private uncheckedTimes = 0; // times offered before any check: corrected (at most twice a call)
   private lastAiAudioAt = 0;
   private lastLoudAt = 0;
   private toolsRunning = 0;
@@ -138,7 +149,8 @@ export class CallSession {
           generationConfig: { responseModalities: ['AUDIO'], speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: this.deps.voice } } } },
           // a short pause before the AI answers; default sensitivity so a quiet caller is heard
           // the plain setting is the retry after Gemini refused the full one (1007)
-          ...(plain ? {} : { realtimeInputConfig: { automaticActivityDetection: { silenceDurationMs: 600 } }, contextWindowCompression: { slidingWindow: {} }, inputAudioTranscription: {} }),
+          // the AI's words as text (outputAudioTranscription): to catch a "booked" or times no tool gave
+          ...(plain ? {} : { realtimeInputConfig: { automaticActivityDetection: { silenceDurationMs: 600 } }, contextWindowCompression: { slidingWindow: {} }, inputAudioTranscription: {}, outputAudioTranscription: {} }),
           systemInstruction: { parts: [{ text: fillPrompt(this.deps.prompt, this.variables) + this.openingNote() }] },
           tools: geminiTools(),
         },
@@ -270,6 +282,26 @@ export class CallSession {
     this.deps.log('start_timing', { step: name, ms: this.deps.now().getTime() - this.t0, retried: this.retried });
   }
 
+  /** The AI said something was booked (cancelled, moved) but no tool answered ok: it must correct itself now. */
+  private checkClaim(text: string) {
+    this.turnText = (this.turnText + text).slice(-600);
+    if (this.outcome || this.falseClaims >= 2 || !DONE_CLAIM.test(this.turnText)) return;
+    this.falseClaims++;
+    this.turnText = '';
+    this.deps.log('false_claim_corrected', {});
+    // the call does not end on it: the next end_call is refused until something really happened
+    this.refusedEnd = false;
+    this.gemini?.send(JSON.stringify({ clientContent: { turns: [{ role: 'user', parts: [{ text: FALSE_CLAIM }] }], turnComplete: true } }));
+  }
+
+  /** A turn that said times of day before check_availability ever answered (and asked for no tool): they are made up. */
+  private checkTimes() {
+    if (this.timesChecked || this.turnTool || this.toolsRunning || this.uncheckedTimes >= 2 || !TIME_SAID.test(this.turnText)) return;
+    this.uncheckedTimes++;
+    this.deps.log('unchecked_times_corrected', {});
+    this.gemini?.send(JSON.stringify({ clientContent: { turns: [{ role: 'user', parts: [{ text: UNCHECKED_TIMES }] }], turnComplete: true } }));
+  }
+
   /** Before the caller ever spoke the opening already asked "How can I help you?": one re-ask is enough. */
   private maxReasks(): number {
     return this.talked ? 2 : 1;
@@ -304,6 +336,8 @@ export class CallSession {
       this.ready = true;
       if (!this.openingHeard) void this.startOpening();
     }
+    const said = m.serverContent?.outputTranscription?.text;
+    if (typeof said === 'string' && said) this.checkClaim(said);
     for (const part of m.serverContent?.modelTurn?.parts ?? []) {
       if (part?.inlineData?.data && this.muted) continue;
       if (part?.inlineData?.data) {
@@ -333,6 +367,9 @@ export class CallSession {
       return;
     }
     if (m.serverContent?.turnComplete) {
+      this.checkTimes();
+      this.turnText = '';
+      this.turnTool = false;
       this.turnAudio = false;
       this.nudgePending = false;
       if (!this.hangUpWhenSaid) {
@@ -367,6 +404,7 @@ export class CallSession {
     // every function call Gemini asks for, by name only (never the arguments: they hold the caller's data), so a
     // call that offered times without check_availability shows in the logs
     this.deps.log('tool_call', { tools: calls.map((c) => String(c.name).slice(0, 40)) });
+    this.turnTool = true;
     if (!this.openingSpoken) {
       // e.g. previous_visit_reminder before a word was said: the caller would wait in silence and miss the disclosure
       this.deps.log('tool_before_opening', { tools: calls.map((c) => c.name) });
@@ -415,6 +453,7 @@ export class CallSession {
       try { if (raw) result = JSON.parse(raw); } catch { /* keep system_error */ }
       // the reason code only (e.g. slot_taken), never the arguments or the caller's data
       this.deps.log('tool_result', { tool: c.name, ok: result?.ok === true, ...(result?.ok === true ? {} : { reason: String(result?.reason ?? '').slice(0, 40) }) });
+      if (result?.ok === true && ['check_availability', 'find_my_appointments'].includes(c.name)) this.timesChecked = true;
       if (result?.ok === true && ['book_appointment', 'take_message', 'transfer_to_human', 'cancel_appointment', 'reschedule_appointment'].includes(c.name)) this.outcome = true;
       // the call's language is fixed: Gemini listens for it and answers only in it from now on
       if (c.name === 'set_caller_language' && result?.ok === true && typeof result.language === 'string') result = { ...result, next: this.languageNote(result.language) };
