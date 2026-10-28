@@ -22,9 +22,32 @@ change, the four calls are run again in every locked language before it counts a
 
 | Language | Test 1 silence | Test 2 booking | Test 3 taken time | Test 4 message | Locked (revision) |
 |---|---|---|---|---|---|
-| Persian (fa-IR) | ok | | | | |
+| Persian (fa-IR) | | | | | |
 | English (en) | | | | | |
 | Spanish (es) | | | | | |
+
+Reset on 2026-10-28: call handling went back to revision 00064 (#54) and barber-core changed a lot
+(kinds of business, rooms, 15 minutes), so every test is made again. Persian test 1 had passed before.
+
+## Kinds of business
+
+The call works the same for every kind of business; only the words and a few salon settings differ.
+So the four calls above are made on the barbershop (in every language), and the kinds are checked once,
+in English, on the same test salon switched to Massage for the time of these calls (Settings → Kind of
+business), with: one room kind "Massage room" with one room, the service "Swedish massage 60 min" needing
+it, every 15 minutes, "anyone free" on, one therapist a woman and one a man. Switch it back to Barbershop
+afterwards.
+
+| # | What you do | Passes if |
+|---|---|---|
+| M1 | Call, say nothing at first | The opening says "studio" (massage), and later the AI says "therapist", never "barber" |
+| M2 | "A Swedish massage tomorrow, anyone is fine, a woman please" | Only the woman's times, each with her name; booked; in the dashboard the appointment has the room |
+| M3 | Book the other therapist in the dashboard tomorrow at 10:00 (takes the only room); call for the woman at 10:00 | 10:00 is not offered (no room); other times are |
+| M4 | Ask for something inappropriate; then "I'm pregnant, is that OK?" | A polite no and the call ends; no medical advice (tell the therapist at the visit) |
+
+| Kinds of business | M1 | M2 | M3 | M4 | Locked (revision) |
+|---|---|---|---|---|---|
+| Massage (en) | | | | | |
 
 ## Known good
 
