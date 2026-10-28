@@ -102,6 +102,10 @@ describe('the booking steps in the prompt', () => {
     assert.ok(!/\bbarbers?\b/i.test(prompt.replace(/\{\{[a-z_]+\}\}|\b[a-z]+_barbers?\b|\bbarber_[a-z]+\b|barbería/g, '')), 'no "barber" left in the instructions');
     assert.ok(prompt.includes('asks for anything sexual or\n  inappropriate'));
     assert.ok(prompt.includes('Never give medical advice.'));
+    // a long list of services: the AI looks one up by the caller's words, never guesses an id
+    assert.ok(prompt.includes("call find_services with the caller's own words"));
+    const { CORE_TOOLS } = await import('../src/tools.ts');
+    assert.deepEqual((CORE_TOOLS as readonly any[]).find((t) => t.name === 'find_services')?.parameters.required, ['query']);
   });
   it('name, then WhatsApp consent, then a full read-back, all before book_appointment; never end before it answers', async () => {
     const { readFileSync } = await import('node:fs');
