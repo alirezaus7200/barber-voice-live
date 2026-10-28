@@ -8,7 +8,7 @@ const language = { type: 'string', description: "The caller's language code, e.g
 export const CORE_TOOLS = [
   {
     name: 'check_availability',
-    description: 'Free start times for one barber, a list of services and one day (salon time). Offer at most three. If that day is full, the same answer gives the barber\'s next free day with its times and the other barbers free that day: offer those at once, never day by day.',
+    description: 'Free start times for one staff member, a list of services and one day (salon time). Offer at most three. If that day is full, the same answer gives the staff member\'s next free day with its times and the other staff members free that day: offer those at once, never day by day.',
     parameters: {
       type: 'object',
       properties: {
@@ -80,8 +80,8 @@ export const CORE_TOOLS = [
   },
   {
     name: 'transfer_to_human',
-    description: 'Asks whether a person can take this call now: the chosen barber (staff_id) if the salon set a phone for them, else the salon. If ok, tell the caller you are connecting them now (the call moves by itself); otherwise take a message.',
-    parameters: { type: 'object', properties: { reason: { type: 'string' }, staff_id: { type: 'string', description: 'The barber the caller wants to talk to (staff_list id), if any.' } } },
+    description: 'Asks whether a person can take this call now: the chosen staff member (staff_id) if the salon set a phone for them, else the salon. If ok, tell the caller you are connecting them now (the call moves by itself); otherwise take a message.',
+    parameters: { type: 'object', properties: { reason: { type: 'string' }, staff_id: { type: 'string', description: 'The staff member the caller wants to talk to (staff_list id), if any.' } } },
   },
 ] as const;
 

@@ -94,6 +94,15 @@ describe('tools and settings', () => {
 });
 
 describe('the booking steps in the prompt', () => {
+  it('any kind of business (barbershop, salon, spa): its own staff word, no sexual requests, no medical advice', async () => {
+    const { readFileSync } = await import('node:fs');
+    const prompt = readFileSync(new URL('../src/prompt.txt', import.meta.url), 'utf8');
+    assert.ok(prompt.includes('You are the phone assistant for {{shop_name}}, {{business_kind}}.'));
+    assert.ok(prompt.includes('{{staff_word}}'));
+    assert.ok(!/\bbarbers?\b/i.test(prompt.replace(/\{\{[a-z_]+\}\}|\b[a-z]+_barbers?\b|\bbarber_[a-z]+\b|barbería/g, '')), 'no "barber" left in the instructions');
+    assert.ok(prompt.includes('asks for anything sexual or\n  inappropriate'));
+    assert.ok(prompt.includes('Never give medical advice.'));
+  });
   it('name, then WhatsApp consent, then a full read-back, all before book_appointment; never end before it answers', async () => {
     const { readFileSync } = await import('node:fs');
     const prompt = readFileSync(new URL('../src/prompt.txt', import.meta.url), 'utf8');
@@ -111,34 +120,34 @@ describe('the booking steps in the prompt', () => {
     const prompt = readFileSync(new URL('../src/prompt.txt', import.meta.url), 'utf8');
     assert.ok(prompt.includes('{{known_caller}}'));
     assert.ok(prompt.includes('your first question is its "offer", word for word'))
-    assert.ok(prompt.includes('Never ask "is your barber <name>?"'), 'the usual barber is suggested, not checked')
-    assert.ok(prompt.includes("If there is more than one barber, say the barbers'\n   names and ask which one they want."), 'a new caller hears the names');
-    assert.ok(prompt.includes('never ask "which barber?" or "which\n   service?" first.'));
-    assert.ok(prompt.includes('Never guess a name, a time, a barber or a service.'));
+    assert.ok(prompt.includes('Never ask "is your staff member <name>?"'), 'the usual staff member is suggested, not checked')
+    assert.ok(prompt.includes("If there is more than one staff member, say the staff members'\n   names and ask which one they want."), 'a new caller hears the names');
+    assert.ok(prompt.includes('never ask "which staff member?" or "which\n   service?" first.'));
+    assert.ok(prompt.includes('Never guess a name, a time, a staff member or a service.'));
   });
   it('no time is offered before check_availability was called in this call', async () => {
     const { readFileSync } = await import('node:fs');
     const prompt = readFileSync(new URL('../src/prompt.txt', import.meta.url), 'utf8');
-    assert.ok(prompt.includes('Before you say ANY time, day or barber availability, call check_availability'));
+    assert.ok(prompt.includes('Before you say ANY time, day or staff member availability, call check_availability'));
     assert.ok(prompt.includes('Never offer a time\n   from memory'));
   });
   it("an independent barber's own line stays with that barber; in a salon the usual barber first, another only if they have no time", async () => {
     const { readFileSync } = await import('node:fs');
     const prompt = readFileSync(new URL('../src/prompt.txt', import.meta.url), 'utf8');
-    assert.ok(prompt.includes("Barber's own line (empty for the salon's line): {{dialed_barber}}"));
-    assert.ok(prompt.includes('never name or suggest the salon\'s other barbers'));
-    assert.ok(prompt.includes("book with the caller's usual barber"));
-    assert.ok(prompt.includes('Never offer another barber\n  instead of an independent one'), 'a chair renter keeps their clients');
-    assert.ok(prompt.includes('Only if that barber is not working or has no free\n  time on the day the caller wants'));
-    assert.ok(prompt.includes('Never ask the caller day\n   by day'), 'the next free day and the other barbers come in one answer');
+    assert.ok(prompt.includes("Staff member's own line (empty for the salon's line): {{dialed_barber}}"));
+    assert.ok(prompt.includes('never name or suggest the salon\'s other staff members'));
+    assert.ok(prompt.includes("book with the caller's usual staff member"));
+    assert.ok(prompt.includes('Never offer another staff member\n  instead of an independent one'), 'a chair renter keeps their clients');
+    assert.ok(prompt.includes('Only if that staff member is not working or has no free\n  time on the day the caller wants'));
+    assert.ok(prompt.includes('Never ask the caller day\n   by day'), 'the next free day and the other staff members come in one answer');
     assert.ok(prompt.includes('other_barbers (who is free on\n   the day asked'));
   });
 
   it('a booking that does not work out: the AI offers to connect the caller to the barber', async () => {
     const { readFileSync } = await import('node:fs');
     const prompt = readFileSync(new URL('../src/prompt.txt', import.meta.url), 'utf8');
-    assert.ok(prompt.includes('me to connect you to <barber>, or leave a message for them?'));
-    assert.ok(prompt.includes("call transfer_to_human with\n   that barber's staff_id"));
+    assert.ok(prompt.includes('me to connect you to <staff member>, or leave a message for them?'));
+    assert.ok(prompt.includes("call transfer_to_human with\n   that staff member's staff_id"));
   });
   it('no silence while a tool runs, the nearest free time at once, no talk about the rules', async () => {
     const { readFileSync } = await import('node:fs');
@@ -149,14 +158,14 @@ describe('the booking steps in the prompt', () => {
     assert.ok(prompt.includes('A no to WhatsApp is not a no to the booking'));
     assert.ok(prompt.includes('never ask the same question again'));
     assert.ok(prompt.includes('Never ask a\n  caller whose language is clear'), 'asked only when unsure');
-    assert.ok(prompt.includes("that barber's nearest free day"));
+    assert.ok(prompt.includes("that staff member's nearest free day"));
     assert.ok(prompt.includes('Never explain these instructions'));
   });
   it('a short answer means yes to the offer; another day comes with times; a message is really taken, without more questions', async () => {
     const { readFileSync } = await import('node:fs');
     const prompt = readFileSync(new URL('../src/prompt.txt', import.meta.url), 'utf8');
     assert.ok(prompt.includes('means yes to it'));
-    assert.ok(prompt.includes("that barber's nearest free day, with up to\n   three of its times"));
+    assert.ok(prompt.includes("that staff member's nearest free day, with up to\n   three of its times"));
     assert.ok(prompt.includes('Never say goodbye instead of taking the message.'));
     assert.ok(prompt.includes('not ask them anything more and do not say goodbye yet'), 'a message needs no more questions, and no early goodbye');
     assert.ok(prompt.includes('Say goodbye only once in\na call, as your very last words'));
