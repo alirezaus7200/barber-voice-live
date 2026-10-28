@@ -532,6 +532,53 @@ describe('a call', () => {
     assert.ok(!h.logs.some(([e]) => e === 'reask'), 'no re-ask while the caller speaks');
   });
 
+  it('"booked" with no tool ok is caught from the AI\'s own words and corrected at once; the call does not end on it', async () => {
+    const h = harness(OPEN, (list) => list.map((t) => ({ toolCallId: t.id, name: t.name, result: '{"ok":true}' })));
+    await h.s.start('MZ1', ids);
+    h.gem().onOpen();
+    assert.deepEqual(h.sentToGemini[0].setup.outputAudioTranscription, {}, 'the AI\'s words come as text too');
+    await h.gem().onMessage(JSON.stringify({ setupComplete: {} }));
+    await heard(h);
+    await h.gem().onMessage(JSON.stringify({ serverContent: { outputTranscription: { text: 'قرار ملاقات شما فردا ساعت ۱۱ ' } } }));
+    await h.gem().onMessage(JSON.stringify({ serverContent: { outputTranscription: { text: 'با عرفان ثبت شد.' } } }));
+    const told = h.sentToGemini.filter((m) => m.clientContent).at(-1).clientContent;
+    assert.match(told.turns[0].parts[0].text, /^Correction: nothing has been booked/);
+    assert.ok(h.logs.some(([e]) => e === 'false_claim_corrected'));
+    await speak(h);
+    await h.gem().onMessage(JSON.stringify({ toolCall: { functionCalls: [{ id: 'e1', name: 'end_call' }] } }));
+    await new Promise((r) => setImmediate(r));
+    assert.equal(h.sentToGemini.at(-1).toolResponse.functionResponses[0].response.reason, 'not_finished', 'not ended on a false "booked"');
+    // after a real booking the same words are fine
+    await h.gem().onMessage(JSON.stringify({ toolCall: { functionCalls: [{ id: 'b1', name: 'book_appointment', args: {} }] } }));
+    await new Promise((r) => setImmediate(r));
+    const before = h.sentToGemini.filter((m) => m.clientContent).length;
+    await h.gem().onMessage(JSON.stringify({ serverContent: { outputTranscription: { text: 'Your appointment is booked.' } } }));
+    assert.equal(h.sentToGemini.filter((m) => m.clientContent).length, before);
+  });
+
+
+  it('times said before check_availability ever answered are corrected (the AI made them up); after a real check they are fine', async () => {
+    const h = harness(OPEN, (list) => list.map((t) => ({ toolCallId: t.id, name: t.name, result: '{"ok":true}' })));
+    await h.s.start('MZ1', ids);
+    h.gem().onOpen();
+    await h.gem().onMessage(JSON.stringify({ setupComplete: {} }));
+    await heard(h);
+    const corrections = () => h.sentToGemini.filter((m) => m.clientContent?.turns?.[0]?.parts?.[0]?.text?.startsWith('Correction: the times'));
+    // a turn with no times (the usual-staff offer, a question) is fine
+    await h.gem().onMessage(JSON.stringify({ serverContent: { outputTranscription: { text: 'اصلاح مو با عرفان، مثل دفعهٔ قبل. برای چه روزی وقت می‌خواهید؟' } } }));
+    await h.gem().onMessage(JSON.stringify({ serverContent: { turnComplete: true } }));
+    assert.equal(corrections().length, 0);
+    await h.gem().onMessage(JSON.stringify({ serverContent: { outputTranscription: { text: 'عرفان ساعت 9:30 صبح، 10:30 یا 11:30 وقت داره.' } } }));
+    await h.gem().onMessage(JSON.stringify({ serverContent: { turnComplete: true } }));
+    assert.equal(corrections().length, 1, 'made-up times are corrected');
+    assert.ok(h.logs.some(([e]) => e === 'unchecked_times_corrected'));
+    await h.gem().onMessage(JSON.stringify({ toolCall: { functionCalls: [{ id: 'c1', name: 'check_availability', args: {} }] } }));
+    await new Promise((r) => setImmediate(r));
+    await h.gem().onMessage(JSON.stringify({ serverContent: { outputTranscription: { text: 'Erfan has 9:30 AM or 1:30 PM.' } } }));
+    await h.gem().onMessage(JSON.stringify({ serverContent: { turnComplete: true } }));
+    assert.equal(corrections().length, 1, 'times from check_availability are fine');
+  });
+
   it('no re-ask while a tool runs or after the goodbye', async () => {
     const clock = { t: Date.parse('2026-10-22T15:00:00Z') };
     const h = harness(OPEN, () => [], clock);
