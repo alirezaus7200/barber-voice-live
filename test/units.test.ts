@@ -102,6 +102,8 @@ describe('the booking steps in the prompt', () => {
     assert.ok(!/\bbarbers?\b/i.test(prompt.replace(/\{\{[a-z_]+\}\}|\b[a-z]+_barbers?\b|\bbarber_[a-z]+\b|barbería/g, '')), 'no "barber" left in the instructions');
     assert.ok(prompt.includes('asks for anything sexual or\n  inappropriate'));
     assert.ok(prompt.includes('Never give medical advice.'));
+    // a caller's hello is a greeting, not an answer ("سلام" right after the offer)
+    assert.ok(prompt.includes('A greeting alone is\n  not an answer to anything'));
     // a long list of services: the AI looks one up by the caller's words, never guesses an id
     assert.ok(prompt.includes("call find_services with the caller's own words"));
     const { CORE_TOOLS } = await import('../src/tools.ts');
