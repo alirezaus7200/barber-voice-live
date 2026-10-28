@@ -102,6 +102,8 @@ describe('the booking steps in the prompt', () => {
     assert.ok(!/\bbarbers?\b/i.test(prompt.replace(/\{\{[a-z_]+\}\}|\b[a-z]+_barbers?\b|\bbarber_[a-z]+\b|barbería/g, '')), 'no "barber" left in the instructions');
     assert.ok(prompt.includes('asks for anything sexual or\n  inappropriate'));
     assert.ok(prompt.includes('Never give medical advice.'));
+    assert.ok(prompt.includes('«یه لحظه، نگاه می‌کنم.»'), 'the waiting phrase in the caller\'s language');
+    assert.ok(prompt.includes('Pass `language`'));
     // WhatsApp only when the salon sends it, asked once, any "no" or "I don't have it" is a no; a new caller's name first
     assert.ok(prompt.includes('WhatsApp reminders: {{whatsapp_rule}}'));
     assert.ok(prompt.includes('Never ask it twice in a call'));
