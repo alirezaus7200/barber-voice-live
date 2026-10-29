@@ -136,6 +136,7 @@ describe('the booking steps in the prompt', () => {
     assert.ok(book, 'customer_name is always sent (left out, the name was asked twice)');
     assert.ok(prompt.includes('Always pass customer_name to book_appointment.'));
     assert.ok(prompt.includes('do not call it at all. Call it\n  without a word: never say you are setting the language'), 'set_caller_language is silent');
+    assert.ok(prompt.includes('still call set_caller_language once\n  with its code (it answers unsupported_language; the platform counts which languages callers want)'), 'other languages are counted');
     const booking = prompt.indexOf('call book_appointment. Never end the call before it');
     assert.ok(name > 0 && consent > name && readBack > consent && booking > readBack, 'name, consent, read-back, booking');
     assert.ok(prompt.includes('so never ask after booking'), 'consent is recorded only in the booking call');
