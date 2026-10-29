@@ -291,18 +291,18 @@ describe('a call', () => {
     const silent = Buffer.alloc(160, 0xff).toString('base64');
     const told = () => h.sentToGemini.filter((m) => m.clientContent).map((m) => m.clientContent.turns[0].parts[0].text).filter((t) => t.startsWith('The caller just said'));
     await h.gem().onMessage(JSON.stringify({ serverContent: { inputTranscription: { text: ' بله' } } }));
+    clock.t += 3500; h.s.fromCaller(silent);
+    assert.equal(told().length, 0, 'Gemini may still be answering (it was, at 3 s)');
     clock.t += 2000; h.s.fromCaller(silent);
-    assert.equal(told().length, 0, 'Gemini may still be answering');
-    clock.t += 1500; h.s.fromCaller(silent);
     assert.equal(told().length, 1);
     assert.match(told()[0], /^The caller just said: "بله"\. Answer that now.*do not ask your last question again.*call book_appointment now/);
     assert.ok(h.logs.some(([e]) => e === 'heard_unanswered'));
-    clock.t += 3500; h.s.fromCaller(silent);
+    clock.t += 5500; h.s.fromCaller(silent);
     assert.equal(told().length, 1, 'once');
     // answered in time: nothing is added
     await h.gem().onMessage(JSON.stringify({ serverContent: { inputTranscription: { text: 'yes' } } }));
     await speak(h);
-    clock.t += 3500; h.s.fromCaller(silent);
+    clock.t += 5500; h.s.fromCaller(silent);
     assert.equal(told().length, 1, 'the AI answered');
   });
 
