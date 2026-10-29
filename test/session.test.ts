@@ -183,6 +183,16 @@ describe('a call', () => {
     assert.equal(setup.realtimeInputConfig.automaticActivityDetection.startOfSpeechSensitivity, undefined);
   });
 
+  it('the start-of-speech settings from the host reach Gemini, and the call\'s text says which were used', async () => {
+    const h = harness(OPEN);
+    (h.s as any).deps.activity = { startOfSpeechSensitivity: 'START_SENSITIVITY_HIGH', prefixPaddingMs: 20 };
+    await h.s.start('MZ1', ids);
+    h.gem().onOpen();
+    assert.deepEqual(h.sentToGemini[0].setup.realtimeInputConfig.automaticActivityDetection,
+      { silenceDurationMs: 600, startOfSpeechSensitivity: 'START_SENSITIVITY_HIGH', prefixPaddingMs: 20 });
+    assert.ok(h.logs.some(([e, d]) => e === 'gemini_setup' && d.startOfSpeechSensitivity === 'START_SENSITIVITY_HIGH'));
+  });
+
   it('no answer to the question and both re-asks: 15 s later the AI thanks the caller and ends (once)', async () => {
     const clock = { t: Date.parse('2026-10-22T15:00:00Z') };
     const h = harness(OPEN, () => [], clock);
@@ -323,6 +333,7 @@ describe('a call', () => {
     const [kind, report] = h.core.at(-1);
     assert.equal(kind, 'end');
     assert.deepEqual(report.transcript.map((l: any) => [l.speaker, l.body, l.at_ms]), [
+      ['system', 'gemini_setup {"model":"live-model","plain":false}', 0], // which hearing settings the call used
       ['ai', 'با Test Salon تماس گرفته‌اید.', 0],
       ['tool', 'previous_visit_reminder → {"ok":true,"slots":[]}', 0], // looked up by this server after the opening
       ['caller', 'یه نوبت می‌خواستم', 3000],

@@ -61,6 +61,10 @@ wss.on('connection', (twilio) => {
       if (!validStreamToken(cfg.streamSecret, p, c.token, Date.now())) { log('stream_token_rejected', {}); twilio.close(); return; }
       session = new CallSession({
         core, prompt, model: cfg.geminiModel, voice: cfg.geminiVoice, log, speak,
+        activity: {
+          ...(cfg.geminiStartSensitivity ? { startOfSpeechSensitivity: cfg.geminiStartSensitivity } : {}),
+          ...(cfg.geminiPrefixPaddingMs !== undefined ? { prefixPaddingMs: cfg.geminiPrefixPaddingMs } : {}),
+        },
         now: () => new Date(),
         setTimer: (ms, fn) => setTimeout(fn, ms), clearTimer: (t) => clearTimeout(t as NodeJS.Timeout),
         updateCall: (callSid, twiml) => updateCall({ accountSid: cfg.twilioAccountSid, authToken: cfg.twilioAuthToken, callSid, twiml }),
