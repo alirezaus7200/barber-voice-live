@@ -204,7 +204,7 @@ describe('a call', () => {
     clock.t += 20000; h.s.fromCaller(silent);
     assert.equal(said().length, 4, 'the opening, 2 re-asks, one goodbye');
     assert.match(said()[3], /not answered at all.*call again.*end_call/s);
-    assert.deepEqual(h.logs.find(([e]) => e === 'silence_nudge'), ['silence_nudge', { silentSeconds: 16 }]);
+    assert.deepEqual(h.logs.find(([e]) => e === 'silence_nudge'), ['silence_nudge', { silentSeconds: 16, callerPeak: 0, heardChars: 0 }], 'how loud the line was, and how much Gemini wrote down (a count, never the words)');
     // the AI's end_call after the silence goodbye is accepted (nothing booked, but the caller said nothing)
     await h.gem().onMessage(JSON.stringify({ toolCall: { functionCalls: [{ id: 'e9', name: 'end_call' }] } }));
     await new Promise((r) => setImmediate(r));
