@@ -439,7 +439,12 @@ export class CallSession {
     const words = this.slotWords.get(start);
     if (!words?.length) return true; // a time this call did not offer (nothing to compare): the database still checks it
     const last = this.lastTurns.at(-1) ?? '';
-    return /[?؟]/.test(last) && words.some((w) => last.includes(w));
+    if (!/[?؟]/.test(last) || !words.some((w) => last.includes(w))) return false;
+    // the offer itself («…نه و نیم صبح، دو بعد از ظهر یا شش و نیم عصر… کدوم؟») has the chosen time and a question
+    // too: a read-back names only the chosen time, never another one that was offered
+    const others = [...this.slotWords.entries()].filter(([iso]) => iso !== start).map(([, w]) => w[0])
+      .filter((w) => w && !words.some((own) => own.includes(w)));
+    return !others.some((w) => last.includes(w));
   }
 
   /** The AI said something was booked (cancelled, moved) but no tool answered ok: it must correct itself now. */
