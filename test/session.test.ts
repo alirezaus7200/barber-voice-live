@@ -412,7 +412,8 @@ describe('a call', () => {
   });
 
   it('book_appointment only after a read-back with the chosen time and a question; without it the AI is told to read back first (once)', async () => {
-    const slots = [{ start_iso: '2026-10-30T13:00:00.000Z', local_time: '09:00', spoken: 'ساعت نه صبح', spoken_en: '9:00 AM' }];
+    const slots = [{ start_iso: '2026-10-30T13:00:00.000Z', local_time: '09:00', spoken: 'ساعت نه صبح', spoken_en: '9:00 AM' },
+      { start_iso: '2026-10-30T18:00:00.000Z', local_time: '14:00', spoken: 'ساعت دو بعد از ظهر', spoken_en: '2:00 PM' }];
     const sentToCore: string[] = [];
     const h = harness(OPEN, (list) => list.map((t) => {
       sentToCore.push(t.name);
@@ -432,6 +433,9 @@ describe('a call', () => {
       await h.gem().onMessage(JSON.stringify({ serverContent: { turnComplete: true } }));
     };
     await tool('c1', 'check_availability');
+    await turn('عرفان جمعه ساعت نه صبح یا ساعت دو بعد از ظهر وقت داره. کدوم مناسب‌تره؟');
+    assert.equal((await tool('b0', 'book_appointment', { start_iso: slots[0].start_iso })).reason, 'read_back_first', 'the offer (several times and a question) is not a read-back');
+    (h.s as any).readBackRefused = 0;
     await turn('یادآوری واتساپ براتون بفرستیم؟');
     const held = await tool('b1', 'book_appointment', { start_iso: slots[0].start_iso });
     assert.equal(held.reason, 'read_back_first');
