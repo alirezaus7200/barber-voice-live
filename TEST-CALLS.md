@@ -5,7 +5,7 @@ Rules:
 - Call the test salon's number. No laptop speaker (it echoes); a phone, with or without its own speaker, is fine.
 - All four pass: write the revision name (Cloud Run → Revisions, e.g. `barber-voice-live-00071-abc`) in "Known good" below.
 - One fails: in Cloud Run → Revisions, send 100% of the traffic back to the last known good revision, then revert that PR.
-- For a failure, keep the call text and the logs of that call (Logs, "Last 15 minutes", search `event`).
+- For a failure, open the call in Admin area → Calls (its full text: the AI, the caller, tools and the server's notes), and keep the logs of that call (Logs, "Last 15 minutes", search `event`).
 
 | # | What you say | Passes if |
 |---|---|---|
@@ -22,12 +22,26 @@ change, the four calls are run again in every locked language before it counts a
 
 | Language | Test 1 silence | Test 2 booking | Test 3 taken time | Test 4 message | Locked (revision) |
 |---|---|---|---|---|---|
-| Persian (fa-IR) | | | | | |
+| Persian (fa-IR) | ok on the old model (00085-vvb, 10-28): **run again** (the model changed) | not yet: books, but asked questions twice (see below) | | | |
 | English (en) | | | | | |
 | Spanish (es) | | | | | |
 
 Reset on 2026-10-28: call handling went back to revision 00064 (#54) and barber-core changed a lot
 (kinds of business, rooms, 15 minutes), so every test is made again. Persian test 1 had passed before.
+
+### Persian test 2: the tries so far (2026-10-28/29)
+
+| Revision | Booked? | What went wrong | Fixed by |
+|---|---|---|---|
+| 00085-vvb | yes | the name was saved as "Unknown" | barber-core #98, voice-live #65 (the name is said back; stand-ins refused) |
+| (next) | no | times made up and "booked" said with no tool call | voice-live #66 (the claim and time guards) |
+| (next) | no | Alireza had no shifts; a second re-ask offered "connect or message" mid-booking | shifts filled; voice-live #67 |
+| (next) | yes | «درسته؟» asked again after «بله» | (speakerphone: nothing reached the line) |
+| (next) | no | speakerphone in the car: «بله» never reached the line | test at the ear |
+| 00099-t62 | yes | the name asked twice | voice-live #70 (late transcription no longer resent) |
+| (next) | yes | the name asked again at booking; "let me set the language" | voice-live #71, barber-core #101 |
+
+Next: run test 2 again at the ear, then read the call's text in Admin area → Calls.
 
 ## Kinds of business
 
