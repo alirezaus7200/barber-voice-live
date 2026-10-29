@@ -183,6 +183,55 @@ describe('a call', () => {
     assert.equal(setup.realtimeInputConfig.automaticActivityDetection.startOfSpeechSensitivity, undefined);
   });
 
+  it('our own turns (GEMINI_TURNS=ours): Gemini\'s detection is off; a clear voice starts a turn with the 200 ms before it, 700 ms of quiet ends it', async () => {
+    const clock = { t: Date.parse('2026-10-22T15:00:00Z') };
+    const h = harness(OPEN, () => [], clock);
+    (h.s as any).deps.ourTurns = true;
+    await h.s.start('MZ1', ids);
+    h.gem().onOpen();
+    assert.deepEqual(h.sentToGemini[0].setup.realtimeInputConfig.automaticActivityDetection, { disabled: true });
+    assert.ok(h.logs.some(([e, d]) => e === 'gemini_setup' && d.turns === 'ours'));
+    await h.gem().onMessage(JSON.stringify({ setupComplete: {} }));
+    await heard(h);
+    await talked(h); // "Which day?"
+    clock.t += 3000; // the AI's words are played
+    const silent = Buffer.alloc(160, 0xff).toString('base64');
+    const loud = Buffer.alloc(160, 0x00).toString('base64');
+    const from = h.sentToGemini.length;
+    const kinds = () => h.sentToGemini.slice(from).map((m) => m.realtimeInput ? Object.keys(m.realtimeInput)[0] : Object.keys(m)[0]);
+    for (let i = 0; i < 12; i++) { clock.t += 20; h.s.fromCaller(silent); }
+    assert.deepEqual(kinds(), [], 'nothing before the caller speaks');
+    for (let i = 0; i < 15; i++) { clock.t += 20; h.s.fromCaller(loud); } // «فردا», 300 ms
+    assert.equal(kinds()[0], 'activityStart');
+    assert.equal(kinds().filter((k) => k === 'audio').length, 10 + 14, 'the 200 ms before the voice, then the voice');
+    for (let i = 0; i < 30; i++) { clock.t += 20; h.s.fromCaller(silent); }
+    assert.equal(kinds().filter((k) => k === 'activityEnd').length, 0, 'not yet: 600 ms of quiet');
+    for (let i = 0; i < 10; i++) { clock.t += 20; h.s.fromCaller(silent); }
+    assert.deepEqual(kinds().filter((k) => k !== 'audio'), ['activityStart', 'activityEnd'], 'one short answer, one turn');
+    const n = kinds().length;
+    for (let i = 0; i < 20; i++) { clock.t += 20; h.s.fromCaller(silent); }
+    assert.equal(kinds().length, n, 'no audio between turns');
+  });
+
+  it('our own turns: while the AI is talking only a clearly louder voice starts one (its echo does not cut it off)', async () => {
+    const clock = { t: Date.parse('2026-10-22T15:00:00Z') };
+    const h = harness(OPEN, () => [], clock);
+    (h.s as any).deps.ourTurns = true;
+    await h.s.start('MZ1', ids);
+    h.gem().onOpen();
+    await h.gem().onMessage(JSON.stringify({ setupComplete: {} }));
+    await heard(h);
+    await speak(h); // the AI is talking
+    const echo = Buffer.alloc(160, 0xb8).toString('base64'); // ~2900: a mid-level line: above the hiss, below the louder mark
+    const from = h.sentToGemini.length;
+    for (let i = 0; i < 20; i++) { clock.t += 20; h.s.fromCaller(echo); }
+    assert.equal(h.sentToGemini.slice(from).filter((m) => m.realtimeInput?.activityStart).length, 0);
+    await h.gem().onMessage(JSON.stringify({ serverContent: { turnComplete: true } }));
+    clock.t += 2000; // the AI stopped: the same voice now starts a turn
+    h.s.fromCaller(echo);
+    assert.equal(h.sentToGemini.slice(from).filter((m) => m.realtimeInput?.activityStart).length, 1);
+  });
+
   it('the start-of-speech settings from the host reach Gemini, and the call\'s text says which were used', async () => {
     const h = harness(OPEN);
     (h.s as any).deps.activity = { startOfSpeechSensitivity: 'START_SENSITIVITY_HIGH', prefixPaddingMs: 20 };
