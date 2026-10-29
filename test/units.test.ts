@@ -101,7 +101,7 @@ describe('tools and settings', () => {
     const by = Object.fromEntries(d.map((x) => [x.name, x]));
     assert.equal(by.check_availability.parameters.type, 'OBJECT');
     assert.equal(by.check_availability.parameters.properties.service_ids.items.type, 'STRING');
-    assert.equal(by.find_my_appointments.parameters, undefined);
+    assert.equal(by.find_my_appointments.parameters.properties.language.type, 'STRING', 'the call\'s language, for its spoken words');
     assert.ok(by.end_call && by.transfer_to_human && by.take_message);
   });
   it('refuses missing or weak settings', () => {
