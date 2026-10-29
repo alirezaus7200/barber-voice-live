@@ -40,6 +40,9 @@ const FALSE_CLAIM = 'Correction: nothing has been booked, cancelled or moved in 
 // a time of day said out loud (en, es, fa): an offer of times is only real after check_availability answered
 const TIME_SAID = /\b\d{1,2}[:.]\d{2}\b|[۰-۹]{1,2}[:٫][۰-۹]{2}|\b\d{1,2}\s?(a\.?m\.?|p\.?m\.?)(?![a-z])|ساعت\s*([\d۰-۹]|یک|دو|سه|چهار|پنج|شش|هفت|هشت|نه|ده|یازده|دوازده)|\ba las (\d|una|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez|once|doce)\b/i;
 const UNCHECKED_TIMES = 'Correction: the times you just said did not come from check_availability (it has not answered in this call), so they may not be free. Tell the caller in one short sentence, in their language, that you will check, then call check_availability now and offer only the times it returns.';
+// Gemini wrote down what the caller said but gave no answer this long (a short «بله» it let pass): it is told
+// what it heard, instead of the caller being asked the same question again
+const HEARD_WAIT_MS = 3000;
 const SILENCE_NUDGE_MS = 15000; // after both re-asks the caller still says nothing this long: the AI thanks them and ends the call
 const REASK_MS = 5000; // the AI asked and the caller says nothing this long: the AI asks again (callers do not wait in silence)
 const REASK = 'The caller has not answered for about 5 seconds. Say out loud now only your last question again, short, in the caller\'s language (after the opening: just "How can I help you?"). Add nothing else: never say they have not answered.';
@@ -69,6 +72,8 @@ export class CallSession {
   private reasks = 0; // re-asks since the AI last answered the caller (at most 2; 1 before the caller ever spoke)
   private talked = false; // the AI has answered the caller once (a conversation started)
   private turnText = ''; // what the AI said in this turn (output transcription)
+  private callerSaid = ''; // what Gemini heard the caller say since the AI last spoke (input transcription)
+  private callerSaidAt = 0;
   private turnTool = false; // the AI asked for a tool in this turn
   private falseClaims = 0; // "booked" with no tool ok: corrected (at most twice a call)
   private timesChecked = false; // check_availability (or find_my_appointments) answered ok in this call
@@ -195,6 +200,13 @@ export class CallSession {
         this.aiWaitingSince = now;
         this.deps.log('wait_restarted', {});
       }
+      if (this.callerSaid && !this.toolsRunning && !this.hangUpWhenSaid && !this.turnAudio && now - this.callerSaidAt > HEARD_WAIT_MS) {
+        // Gemini heard the caller (it wrote the words down) but did not answer: tell it what it heard, once
+        const words = this.callerSaid.replace(/["\\]/g, ' ').replace(/\s+/g, ' ').trim();
+        this.callerSaid = '';
+        this.deps.log('heard_unanswered', {});
+        this.gemini.send(JSON.stringify({ clientContent: { turns: [{ role: 'user', parts: [{ text: `The caller just said: "${words}". Answer that now, in their language; do not ask your last question again. If it is a yes to your read-back, call book_appointment now.` }] }], turnComplete: true } }));
+      }
       if (peakOf(pcm) > SPEECH_PEAK) {
         // a loud line (the caller, or noise and echo) pauses the count; only the AI answering resets the re-asks
         this.aiWaitingSince = 0;
@@ -205,7 +217,8 @@ export class CallSession {
         // still counting: if Gemini says nothing to this either, the next step still comes (never a silent line)
         this.aiWaitingSince = now;
         this.nudgePending = true;
-        this.deps.log('reask', { n: this.reasks });
+        // loudMsAgo: how long ago the line was last loud (the caller may have answered and Gemini missed it)
+        this.deps.log('reask', { n: this.reasks, loudMsAgo: this.lastLoudAt ? Math.min(now - this.lastLoudAt, 99999) : -1 });
         this.gemini.send(JSON.stringify({ clientContent: { turns: [{ role: 'user', parts: [{ text: this.reasks === 1 ? REASK : REASK_OFFER }] }], turnComplete: true } }));
       } else if (this.aiWaitingSince && this.reasks >= this.maxReasks() && !this.nudged
                  && now - this.aiWaitingSince > (this.talked ? SILENCE_NUDGE_MS : FIRST_SILENCE_NUDGE_MS)) {
@@ -284,6 +297,20 @@ export class CallSession {
     this.deps.log('start_timing', { step: name, ms: this.deps.now().getTime() - this.t0, retried: this.retried });
   }
 
+  /** The caller's last visit, looked up here right after the opening (the AI said "one moment" before the tool). */
+  private async previousVisit() {
+    let res: any = null;
+    try {
+      const r = await this.deps.core.tools(this.ids, [{ id: 'previous-visit', name: 'previous_visit_reminder', args: {} }]);
+      res = JSON.parse(r.find((x) => x.toolCallId === 'previous-visit')?.result ?? 'null');
+    } catch { /* no reminder: the call goes on */ }
+    if (!res) return;
+    this.deps.log('tool_result', { tool: 'previous_visit_reminder', ok: res.ok === true, ...(res.remind === true ? { remind: true } : {}) });
+    if (this.closed || res.ok !== true || res.remind !== true || typeof res.spoken !== 'string' || !res.spoken.trim()) return;
+    const spoken = res.spoken.replace(/["\\]/g, ' ').slice(0, 300);
+    this.gemini?.send(JSON.stringify({ clientContent: { turns: [{ role: 'user', parts: [{ text: `Note from the phone system: say this to the caller now, exactly, in one short turn: "${spoken}". If they already asked for something, answer that instead and leave this out.` }] }], turnComplete: true } }));
+  }
+
   /** The AI said something was booked (cancelled, moved) but no tool answered ok: it must correct itself now. */
   private checkClaim(text: string) {
     this.turnText = (this.turnText + text).slice(-600);
@@ -316,6 +343,7 @@ export class CallSession {
       this.openingHeard = true;
       this.step('opening_heard');
       this.aiWaitingSince = this.deps.now().getTime();
+      void this.previousVisit();
       return;
     }
     if (this.aiWaitingSince) this.aiWaitingSince = this.deps.now().getTime();
@@ -330,6 +358,8 @@ export class CallSession {
     // re-ask now (a re-ask over a quiet "yes" made the AI ask again, or offer a message instead of booking)
     const heardText = m.serverContent?.inputTranscription?.text;
     if (typeof heardText === 'string' && heardText.trim()) {
+      this.callerSaid = (this.callerSaid + heardText).slice(-200);
+      this.callerSaidAt = this.deps.now().getTime();
       this.aiWaitingSince = 0;
       this.lastLoudAt = this.deps.now().getTime();
     }
@@ -346,6 +376,7 @@ export class CallSession {
         this.lastAiAudioAt = this.deps.now().getTime();
         this.aiWaitingSince = 0;
         this.turnAudio = true;
+        this.callerSaid = ''; // the AI answers
         this.openingSpoken = true;
         if (!this.nudgePending) { this.reasks = 0; if (this.openingHeard) this.talked = true; }
         if (this.toolAnsweredAt) {
@@ -387,7 +418,7 @@ export class CallSession {
     }
     // the caller spoke over the AI: drop what Twilio still has queued (never the opening)
     if (m.serverContent?.interrupted && this.openingHeard) this.twilio.send(JSON.stringify({ event: 'clear', streamSid: this.streamSid }));
-    if (m.toolCall?.functionCalls?.length) this.aiWaitingSince = 0; // a tool runs: the caller is not being asked
+    if (m.toolCall?.functionCalls?.length) { this.aiWaitingSince = 0; this.callerSaid = ''; } // a tool runs: the caller is not being asked
     if (m.toolCall?.functionCalls?.length) await this.runTools(m.toolCall.functionCalls);
   }
 

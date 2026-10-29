@@ -141,7 +141,10 @@ describe('the booking steps in the prompt', () => {
   it('short questions; the waiting phrase only right before a tool; a named day («فردا») is checked at once, never asked again', async () => {
     const { readFileSync } = await import('node:fs');
     const prompt = readFileSync(new URL('../src/prompt.txt', import.meta.url), 'utf8');
-    assert.ok(prompt.includes('Say it only right before a tool\n  call, never before a question; never before previous_visit_reminder'));
+    assert.ok(prompt.includes('Say it only right before a tool\n  call, never before a question, and always in the caller\'s language'));
+    assert.ok(prompt.includes('never\ncall previous_visit_reminder yourself'), 'the phone system looks up the last visit');
+    assert.ok(prompt.includes('when one service fits, take it and go on, without asking "do you\n   mean …?"'));
+    assert.ok(!/say "One moment\." and/.test(prompt), '"One moment" only in the caller\'s language');
     assert.ok(prompt.includes('One question at a time, without repeating back what the caller just\n  said or putting a name in front'));
     assert.ok(prompt.includes('«فردا» tomorrow'));
     assert.ok(prompt.includes('A day the caller named is never asked again ("Which day?"): call\n   check_availability for it at once.'));
