@@ -44,7 +44,7 @@ export const CORE_TOOLS = [
         staff_id: id,
         service_ids: { type: 'array', items: id },
         start_iso: { type: 'string', description: 'start_iso exactly as check_availability returned it.' },
-        customer_name: { type: 'string' },
+        customer_name: { type: 'string', description: "Always. A new caller: the name they said and confirmed, exactly. A known caller: the first name from Known caller (the name on file is kept). Never a guess or a made-up word." },
         language,
         whatsapp_consent: { type: 'string', enum: ['true', 'false', 'unknown'], description: 'The caller agreed to WhatsApp reminders (a clear yes), said no, or was not asked.' },
       },
@@ -64,7 +64,7 @@ export const CORE_TOOLS = [
   },
   {
     name: 'previous_visit_reminder',
-    description: 'Call once, right after the opening. Say its spoken sentence only if remind is true.',
+    description: 'The phone system calls this itself right after the opening; never call it.',
     parameters: { type: 'object', properties: { language } },
   },
   {
@@ -115,9 +115,12 @@ function geminiSchema(s: any): any {
   return out;
 }
 
+// barber-core tools this server calls itself (the AI is not given them: it said "one moment" before them)
+export const BRIDGE_ONLY_TOOLS: ReadonlySet<string> = new Set(['previous_visit_reminder']);
+
 export function geminiTools() {
   return [{
-    functionDeclarations: [...CORE_TOOLS, ...LOCAL_TOOLS].map((t) => ({
+    functionDeclarations: [...CORE_TOOLS, ...LOCAL_TOOLS].filter((t) => !BRIDGE_ONLY_TOOLS.has(t.name)).map((t) => ({
       name: t.name, description: t.description,
       ...(t.parameters && Object.keys((t.parameters as any).properties ?? {}).length ? { parameters: geminiSchema(t.parameters) } : {}),
     })),

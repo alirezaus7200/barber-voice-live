@@ -34,13 +34,21 @@ const OPENING_AUDIO_WAIT_MS = 4000; // the ready-made opening is late: Gemini sa
 const GOODBYE_MAX_MS = 15000; // safety: hang up even if the goodbye never completes
 const TIME_WARNING_S = 40; // seconds before the call cap when the AI is told to wrap up (enough to take a message)
 const TIME_NUDGE = 'About 40 seconds are left in this call. If the caller already chose a time: read it back and, after their yes, call book_appointment now. Never say it is booked unless book_appointment answered ok. If it cannot be finished, ask the caller: shall I connect you to the barber, or take a message for the barber? (Offer to connect them only if the salon is open now; otherwise offer only the message.) Then stop and wait for the answer. If they want a message, take it with take_message, then say a short goodbye in the caller\'s language and call end_call. Never say goodbye in the same turn as a question.';
+// words that say something was booked, cancelled or moved (en, es, fa): never true before a tool said so (hard rule 8)
+const DONE_CLAIM = /\b(is booked|are booked|you're booked|you are booked|booked you|is all set|has been (booked|cancel+ed|moved|rescheduled)|is cancel+ed|(qued[oó]|est[aá]|ya est[aá]) (reservad[ao]|agendad[ao]|confirmad[ao]|cancelad[ao])|ha sido (reservad[ao]|cancelad[ao]))\b|ثبت شد|رزرو شد|رزرو کردم|ثبت کردم|لغو شد|جابجا شد/i;
+const FALSE_CLAIM = 'Correction: nothing has been booked, cancelled or moved in this call: no tool answered ok. Tell the caller right away, in their language, that it is not done yet. Then read the appointment back, and after their yes call book_appointment (or the tool they need). Never say it is done before the tool answers ok.';
+// a time of day said out loud (en, es, fa): an offer of times is only real after check_availability answered
+const TIME_SAID = /\b\d{1,2}[:.]\d{2}\b|[۰-۹]{1,2}[:٫][۰-۹]{2}|\b\d{1,2}\s?(a\.?m\.?|p\.?m\.?)(?![a-z])|ساعت\s*([\d۰-۹]|یک|دو|سه|چهار|پنج|شش|هفت|هشت|نه|ده|یازده|دوازده)|\ba las (\d|una|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez|once|doce)\b/i;
+const UNCHECKED_TIMES = 'Correction: the times you just said did not come from check_availability (it has not answered in this call), so they may not be free. Tell the caller in one short sentence, in their language, that you will check, then call check_availability now and offer only the times it returns.';
 const SILENCE_NUDGE_MS = 15000; // after both re-asks the caller still says nothing this long: the AI thanks them and ends the call
 const REASK_MS = 5000; // the AI asked and the caller says nothing this long: the AI asks again (callers do not wait in silence)
 const REASK = 'The caller has not answered for about 5 seconds. Say out loud now only your last question again, short, in the caller\'s language (after the opening: just "How can I help you?"). Add nothing else: never say they have not answered.';
-const REASK_OFFER = 'The caller still has not answered. Ask one short question only, nothing else: if a booking is not finished, "Shall I connect you to the barber, or leave a message for them?" (offer to connect only if the salon is open now; otherwise only the message); if the booking is done, "Anything else?"; otherwise just "How can I help you?" again. Then wait for the answer.';
+// the second re-ask: the caller may have answered too quietly to be heard, so the same question again in other
+// words; "connect or message" only when a tool already said no (a re-ask mid-booking is not a failed booking)
+const REASK_OFFER = 'The caller still has not answered. If they already said yes to your read-back, call book_appointment now instead. Otherwise ask your last question once more, in other short words, and give the choices (for the day: "Today, tomorrow, or another day?" / «امروز، فردا، یا روز دیگه؟»), nothing else. Only if a tool already said this booking cannot be done, ask instead: "Shall I connect you to the barber, or leave a message for them?" (offer to connect only if the salon is open now; otherwise only the message). If the booking is done, just "Anything else?". Then wait for the answer.';
 const MESSAGE_DONE = 'The message is passed on. If you have not told the caller yet, tell them in one short answer that the barber will get their message and get back to them, and say goodbye. If you already said it, say nothing more. Then call end_call.';
 const OPENING_MAX_MS = 20000; // Twilio never confirmed the opening was played: the caller is heard anyway after this
-const SPEECH_PEAK = 1500; // of 32767: louder than the line's background noise
+const SPEECH_PEAK = 700; // of 32767: a voice, even on a speakerphone (quieter than a handset); above the line's hiss
 const SILENCE_NUDGE = 'The caller has not answered at all. Thank them for calling, say they are welcome to call again to book their appointment, then call end_call. Say it in the caller\'s last language.';
 
 export class CallSession {
@@ -60,8 +68,15 @@ export class CallSession {
   private aiWaitingSince = 0; // the AI finished a turn and waits for the caller (0: it does not)
   private reasks = 0; // re-asks since the AI last answered the caller (at most 2; 1 before the caller ever spoke)
   private talked = false; // the AI has answered the caller once (a conversation started)
+  private turnText = ''; // what the AI said in this turn (output transcription)
+  private turnTool = false; // the AI asked for a tool in this turn
+  private falseClaims = 0; // "booked" with no tool ok: corrected (at most twice a call)
+  private timesChecked = false; // check_availability (or find_my_appointments) answered ok in this call
+  private uncheckedTimes = 0; // times offered before any check: corrected (at most twice a call)
   private lastAiAudioAt = 0;
   private lastLoudAt = 0;
+  private callerPeak = 0; // the caller's loudest frame since the AI last finished a turn (of 32767)
+  private heardChars = 0; // how much Gemini wrote down of the caller since then (a count only, never the words)
   private toolsRunning = 0;
   private hangUpWhenSaid = false;
   private outcome = false; // a booking, a message or a transfer happened in this call
@@ -138,7 +153,8 @@ export class CallSession {
           generationConfig: { responseModalities: ['AUDIO'], speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: this.deps.voice } } } },
           // a short pause before the AI answers; default sensitivity so a quiet caller is heard
           // the plain setting is the retry after Gemini refused the full one (1007)
-          ...(plain ? {} : { realtimeInputConfig: { automaticActivityDetection: { silenceDurationMs: 600 } }, contextWindowCompression: { slidingWindow: {} } }),
+          // the AI's words as text (outputAudioTranscription): to catch a "booked" or times no tool gave
+          ...(plain ? {} : { realtimeInputConfig: { automaticActivityDetection: { silenceDurationMs: 600 } }, contextWindowCompression: { slidingWindow: {} }, inputAudioTranscription: {}, outputAudioTranscription: {} }),
           systemInstruction: { parts: [{ text: fillPrompt(this.deps.prompt, this.variables) + this.openingNote() }] },
           tools: geminiTools(),
         },
@@ -181,7 +197,9 @@ export class CallSession {
         this.aiWaitingSince = now;
         this.deps.log('wait_restarted', {});
       }
-      if (peakOf(pcm) > SPEECH_PEAK) {
+      const peak = peakOf(pcm);
+      if (peak > this.callerPeak) this.callerPeak = peak;
+      if (peak > SPEECH_PEAK) {
         // a loud line (the caller, or noise and echo) pauses the count; only the AI answering resets the re-asks
         this.aiWaitingSince = 0;
         this.lastLoudAt = now;
@@ -191,12 +209,13 @@ export class CallSession {
         // still counting: if Gemini says nothing to this either, the next step still comes (never a silent line)
         this.aiWaitingSince = now;
         this.nudgePending = true;
-        this.deps.log('reask', { n: this.reasks });
+        // loudMsAgo: how long ago the line was last loud (the caller may have answered and Gemini missed it)
+        this.deps.log('reask', { n: this.reasks, loudMsAgo: this.lastLoudAt ? Math.min(now - this.lastLoudAt, 99999) : -1, callerPeak: this.callerPeak, heardChars: this.heardChars });
         this.gemini.send(JSON.stringify({ clientContent: { turns: [{ role: 'user', parts: [{ text: this.reasks === 1 ? REASK : REASK_OFFER }] }], turnComplete: true } }));
       } else if (this.aiWaitingSince && this.reasks >= this.maxReasks() && !this.nudged
                  && now - this.aiWaitingSince > (this.talked ? SILENCE_NUDGE_MS : FIRST_SILENCE_NUDGE_MS)) {
         this.nudged = true;
-        this.deps.log('silence_nudge', { silentSeconds: Math.round((now - this.aiWaitingSince) / 1000) });
+        this.deps.log('silence_nudge', { silentSeconds: Math.round((now - this.aiWaitingSince) / 1000), callerPeak: this.callerPeak, heardChars: this.heardChars });
         this.aiWaitingSince = 0;
         this.nudgePending = true;
         // this goodbye ends the call, whether or not the AI also calls end_call: hang up once it was played
@@ -270,6 +289,40 @@ export class CallSession {
     this.deps.log('start_timing', { step: name, ms: this.deps.now().getTime() - this.t0, retried: this.retried });
   }
 
+  /** The caller's last visit, looked up here right after the opening (the AI said "one moment" before the tool). */
+  private async previousVisit() {
+    let res: any = null;
+    try {
+      const r = await this.deps.core.tools(this.ids, [{ id: 'previous-visit', name: 'previous_visit_reminder', args: {} }]);
+      res = JSON.parse(r.find((x) => x.toolCallId === 'previous-visit')?.result ?? 'null');
+    } catch { /* no reminder: the call goes on */ }
+    if (!res) return;
+    this.deps.log('tool_result', { tool: 'previous_visit_reminder', ok: res.ok === true, ...(res.remind === true ? { remind: true } : {}) });
+    if (this.closed || res.ok !== true || res.remind !== true || typeof res.spoken !== 'string' || !res.spoken.trim()) return;
+    const spoken = res.spoken.replace(/["\\]/g, ' ').slice(0, 300);
+    this.gemini?.send(JSON.stringify({ clientContent: { turns: [{ role: 'user', parts: [{ text: `Note from the phone system: say this to the caller now, exactly, in one short turn: "${spoken}". If they already asked for something, answer that instead and leave this out.` }] }], turnComplete: true } }));
+  }
+
+  /** The AI said something was booked (cancelled, moved) but no tool answered ok: it must correct itself now. */
+  private checkClaim(text: string) {
+    this.turnText = (this.turnText + text).slice(-600);
+    if (this.outcome || this.falseClaims >= 2 || !DONE_CLAIM.test(this.turnText)) return;
+    this.falseClaims++;
+    this.turnText = '';
+    this.deps.log('false_claim_corrected', {});
+    // the call does not end on it: the next end_call is refused until something really happened
+    this.refusedEnd = false;
+    this.gemini?.send(JSON.stringify({ clientContent: { turns: [{ role: 'user', parts: [{ text: FALSE_CLAIM }] }], turnComplete: true } }));
+  }
+
+  /** A turn that said times of day before check_availability ever answered (and asked for no tool): they are made up. */
+  private checkTimes() {
+    if (this.timesChecked || this.turnTool || this.toolsRunning || this.uncheckedTimes >= 2 || !TIME_SAID.test(this.turnText)) return;
+    this.uncheckedTimes++;
+    this.deps.log('unchecked_times_corrected', {});
+    this.gemini?.send(JSON.stringify({ clientContent: { turns: [{ role: 'user', parts: [{ text: UNCHECKED_TIMES }] }], turnComplete: true } }));
+  }
+
   /** Before the caller ever spoke the opening already asked "How can I help you?": one re-ask is enough. */
   private maxReasks(): number {
     return this.talked ? 2 : 1;
@@ -282,6 +335,7 @@ export class CallSession {
       this.openingHeard = true;
       this.step('opening_heard');
       this.aiWaitingSince = this.deps.now().getTime();
+      void this.previousVisit();
       return;
     }
     if (this.aiWaitingSince) this.aiWaitingSince = this.deps.now().getTime();
@@ -292,16 +346,28 @@ export class CallSession {
     try { m = JSON.parse(text); } catch { return; }
     // Gemini says it will close the session soon (goAway): log why, so a short call can be explained
     if (m.goAway) this.deps.log('gemini_go_away', { timeLeft: String(m.goAway.timeLeft ?? '') });
+    // Gemini heard the caller (inputAudioTranscription): they answered, even if too quietly for our meter, so no
+    // re-ask now (a re-ask over a quiet "yes" made the AI ask again, or offer a message instead of booking)
+    const heardText = m.serverContent?.inputTranscription?.text;
+    if (typeof heardText === 'string') this.heardChars += heardText.trim().length;
+    if (typeof heardText === 'string' && heardText.trim()) {
+      this.aiWaitingSince = 0;
+      this.lastLoudAt = this.deps.now().getTime();
+    }
     if (m.setupComplete) {
       this.step('gemini_ready');
       this.ready = true;
       if (!this.openingHeard) void this.startOpening();
     }
+    const said = m.serverContent?.outputTranscription?.text;
+    if (typeof said === 'string' && said) this.checkClaim(said);
     for (const part of m.serverContent?.modelTurn?.parts ?? []) {
       if (part?.inlineData?.data && this.muted) continue;
       if (part?.inlineData?.data) {
         this.lastAiAudioAt = this.deps.now().getTime();
         this.aiWaitingSince = 0;
+        // how loud the caller was and how much Gemini wrote down before this answer: a quiet line shows here
+        if (!this.turnAudio && this.openingHeard) this.deps.log('caller_turn', { callerPeak: this.callerPeak, heardChars: this.heardChars });
         this.turnAudio = true;
         this.openingSpoken = true;
         if (!this.nudgePending) { this.reasks = 0; if (this.openingHeard) this.talked = true; }
@@ -326,6 +392,11 @@ export class CallSession {
       return;
     }
     if (m.serverContent?.turnComplete) {
+      this.callerPeak = 0;
+      this.heardChars = 0;
+      this.checkTimes();
+      this.turnText = '';
+      this.turnTool = false;
       this.turnAudio = false;
       this.nudgePending = false;
       if (!this.hangUpWhenSaid) {
@@ -357,6 +428,10 @@ export class CallSession {
 
   private async runToolsNow(calls: { id: string; name: string; args?: unknown }[]) {
     const responses: { id: string; name: string; response: unknown }[] = [];
+    // every function call Gemini asks for, by name only (never the arguments: they hold the caller's data), so a
+    // call that offered times without check_availability shows in the logs
+    this.deps.log('tool_call', { tools: calls.map((c) => String(c.name).slice(0, 40)) });
+    this.turnTool = true;
     if (!this.openingSpoken) {
       // e.g. previous_visit_reminder before a word was said: the caller would wait in silence and miss the disclosure
       this.deps.log('tool_before_opening', { tools: calls.map((c) => c.name) });
@@ -395,12 +470,17 @@ export class CallSession {
         this.timers.push(this.deps.setTimer(GOODBYE_MAX_MS, () => void this.hangUp()));
         continue;
       }
-      if (!CORE_TOOL_NAMES.has(c.name)) { responses.push({ id: c.id, name: c.name, response: { ok: false, reason: 'unknown_tool' } }); continue; }
+      if (!CORE_TOOL_NAMES.has(c.name)) {
+        this.deps.log('tool_unknown', { tool: String(c.name).slice(0, 40) });
+        responses.push({ id: c.id, name: c.name, response: { ok: false, reason: 'unknown_tool' } });
+        continue;
+      }
       const raw = results.find((x) => x.toolCallId === c.id)?.result;
       let result: any = { ok: false, reason: 'system_error' };
       try { if (raw) result = JSON.parse(raw); } catch { /* keep system_error */ }
       // the reason code only (e.g. slot_taken), never the arguments or the caller's data
       this.deps.log('tool_result', { tool: c.name, ok: result?.ok === true, ...(result?.ok === true ? {} : { reason: String(result?.reason ?? '').slice(0, 40) }) });
+      if (result?.ok === true && ['check_availability', 'find_my_appointments'].includes(c.name)) this.timesChecked = true;
       if (result?.ok === true && ['book_appointment', 'take_message', 'transfer_to_human', 'cancel_appointment', 'reschedule_appointment'].includes(c.name)) this.outcome = true;
       // the call's language is fixed: Gemini listens for it and answers only in it from now on
       if (c.name === 'set_caller_language' && result?.ok === true && typeof result.language === 'string') result = { ...result, next: this.languageNote(result.language) };

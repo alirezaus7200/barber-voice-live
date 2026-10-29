@@ -102,6 +102,19 @@ describe('the booking steps in the prompt', () => {
     assert.ok(!/\bbarbers?\b/i.test(prompt.replace(/\{\{[a-z_]+\}\}|\b[a-z]+_barbers?\b|\bbarber_[a-z]+\b|barbería/g, '')), 'no "barber" left in the instructions');
     assert.ok(prompt.includes('asks for anything sexual or\n  inappropriate'));
     assert.ok(prompt.includes('Never give medical advice.'));
+    assert.ok(prompt.includes('«یه لحظه، نگاه می‌کنم.»'), 'the waiting phrase in the caller\'s language');
+    assert.ok(prompt.includes('Pass `language`'));
+    // WhatsApp only when the salon sends it, asked once, any "no" or "I don't have it" is a no; a new caller's name first
+    assert.ok(prompt.includes('WhatsApp reminders: {{whatsapp_rule}}'));
+    assert.ok(prompt.includes('Never ask it twice in a call'));
+    assert.ok(prompt.includes('must say their name first'));
+    assert.ok(prompt.includes('name_needed: you still need their name'));
+    // a refusal is told in plain words before connect-or-message; a yes to the offer moves on to the day
+    assert.ok(prompt.includes('first tell the caller in one short, plain sentence why'));
+    assert.ok(prompt.includes('customer_limit: they already have the most upcoming'));
+    assert.ok(prompt.includes('Do not ask whether they want the same'), 'a known caller is booked with the usual staff member: the first question is the day');
+    // a caller's hello is a greeting, not an answer ("سلام" right after the offer)
+    assert.ok(prompt.includes('A greeting alone is\n  not an answer to anything'));
     // a long list of services: the AI looks one up by the caller's words, never guesses an id
     assert.ok(prompt.includes("call find_services with the caller's own words"));
     const { CORE_TOOLS } = await import('../src/tools.ts');
@@ -110,23 +123,42 @@ describe('the booking steps in the prompt', () => {
   it('name, then WhatsApp consent, then a full read-back, all before book_appointment; never end before it answers', async () => {
     const { readFileSync } = await import('node:fs');
     const prompt = readFileSync(new URL('../src/prompt.txt', import.meta.url), 'utf8');
-    const name = prompt.indexOf("first get the caller's name");
-    const consent = prompt.indexOf('Before booking, ask once, short: "Shall we send you a WhatsApp reminder?"');
+    const name = prompt.indexOf('must say their name first');
+    const consent = prompt.indexOf('them, ask once, short, before the read-back');
     const readBack = prompt.indexOf('Then read it all back in one sentence, every time, even when each part was\n   already agreed one by one');
     assert.ok(prompt.includes('Never call book_appointment before this read-back.'));
-    assert.ok(prompt.includes("a known caller's first name counts: never ask it again"));
-    const book = prompt.indexOf('call book_appointment. Never end the call before it');
-    assert.ok(name > 0 && consent > name && readBack > consent && book > readBack, 'name, consent, read-back, booking');
+    assert.ok(prompt.includes("A known caller's name is on file: never\n   ask it"));
+    assert.ok(prompt.includes('then say the name back and ask if it is right'), 'the heard name is confirmed');
+    assert.ok(prompt.includes('never guess, never replace it\n   with another word, and never invent one'));
+    assert.ok(prompt.includes('the name it will be under'), 'the read-back carries a new caller\'s name');
+    const { CORE_TOOLS } = await import('../src/tools.ts');
+    const book = JSON.stringify(CORE_TOOLS).includes('"required":["staff_id","service_ids","start_iso","customer_name","language"]');
+    assert.ok(book, 'customer_name is always sent (left out, the name was asked twice)');
+    assert.ok(prompt.includes('Always pass customer_name to book_appointment.'));
+    assert.ok(prompt.includes('do not call it at all. Call it\n  without a word: never say you are setting the language'), 'set_caller_language is silent');
+    const booking = prompt.indexOf('call book_appointment. Never end the call before it');
+    assert.ok(name > 0 && consent > name && readBack > consent && booking > readBack, 'name, consent, read-back, booking');
     assert.ok(prompt.includes('so never ask after booking'), 'consent is recorded only in the booking call');
+  });
+  it('short questions; the waiting phrase only right before a tool; a named day («فردا») is checked at once, never asked again', async () => {
+    const { readFileSync } = await import('node:fs');
+    const prompt = readFileSync(new URL('../src/prompt.txt', import.meta.url), 'utf8');
+    assert.ok(prompt.includes('Say it only right before a tool\n  call, never before a question, and always in the caller\'s language'));
+    assert.ok(prompt.includes('never\ncall previous_visit_reminder yourself'), 'the phone system looks up the last visit');
+    assert.ok(prompt.includes('when one service fits, take it and go on, without asking "do you\n   mean …?"'));
+    assert.ok(!/say "One moment\." and/.test(prompt), '"One moment" only in the caller\'s language');
+    assert.ok(prompt.includes('One question at a time, without repeating back what the caller just\n  said or putting a name in front'));
+    assert.ok(prompt.includes('«فردا» tomorrow'));
+    assert.ok(prompt.includes('A day the caller named is never asked again ("Which day?"): call\n   check_availability for it at once.'));
   });
   it('the known caller is greeted by first name and offered the usual barber and last services, once; noise is never guessed', async () => {
     const { readFileSync } = await import('node:fs');
     const prompt = readFileSync(new URL('../src/prompt.txt', import.meta.url), 'utf8');
     assert.ok(prompt.includes('{{known_caller}}'));
-    assert.ok(prompt.includes('your first question is its "offer", word for word'))
-    assert.ok(prompt.includes('Never ask "is your staff member <name>?"'), 'the usual staff member is suggested, not checked')
+    assert.ok(prompt.includes('your first answer is its "offer", word for word'))
+    assert.ok(prompt.includes('ask "is your staff member <name>?"'), 'the usual staff member is booked, not checked')
     assert.ok(prompt.includes("If there is more than one staff member, say the staff members'\n   names and ask which one they want."), 'a new caller hears the names');
-    assert.ok(prompt.includes('never ask "which staff member?" or "which\n   service?" first.'));
+    assert.ok(prompt.includes('never ask "which staff member?" or "which service?": assume the usual ones.'));
     assert.ok(prompt.includes('Never guess a name, a time, a staff member or a service.'));
   });
   it('no time is offered before check_availability was called in this call', async () => {
@@ -159,7 +191,7 @@ describe('the booking steps in the prompt', () => {
     assert.ok(prompt.includes('Never stay silent while a tool runs.'));
     assert.ok(prompt.includes('call set_caller_language once'), 'the language is fixed as soon as it is known');
     assert.ok(prompt.includes('Never ask "morning, afternoon or evening?"'), 'the first free times are offered at once');
-    assert.ok(prompt.includes('A no to WhatsApp is not a no to the booking'));
+    assert.ok(prompt.includes('a no to WhatsApp is never a no to the booking'));
     assert.ok(prompt.includes('never ask the same question again'));
     assert.ok(prompt.includes('Never ask a\n  caller whose language is clear'), 'asked only when unsure');
     assert.ok(prompt.includes("that staff member's nearest free day"));
