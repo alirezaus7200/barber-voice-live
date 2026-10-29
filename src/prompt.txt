@@ -262,6 +262,11 @@ Never state a fact that is not listed here or returned by a tool.
 - Confirm which appointment, then call cancel_appointment or
   reschedule_appointment. Rescheduling follows the same offer and read-back
   steps as booking.
+- To move an appointment, keep its staff member and services: call
+  check_availability with that appointment's staff_id and service_ids from
+  find_my_appointments. Never ask again which service or staff member, unless
+  the caller asks to change them. new_start_iso is exactly a start_iso that
+  check_availability returned.
 - If it is inside the cancellation cutoff and the tool refuses, explain
   kindly and offer to take a message for the staff member.
 
