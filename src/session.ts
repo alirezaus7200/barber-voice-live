@@ -41,8 +41,9 @@ const FALSE_CLAIM = 'Correction: nothing has been booked, cancelled or moved in 
 const TIME_SAID = /\b\d{1,2}[:.]\d{2}\b|[۰-۹]{1,2}[:٫][۰-۹]{2}|\b\d{1,2}\s?(a\.?m\.?|p\.?m\.?)(?![a-z])|ساعت\s*([\d۰-۹]|یک|دو|سه|چهار|پنج|شش|هفت|هشت|نه|ده|یازده|دوازده)|\ba las (\d|una|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez|once|doce)\b/i;
 const UNCHECKED_TIMES = 'Correction: the times you just said did not come from check_availability (it has not answered in this call), so they may not be free. Tell the caller in one short sentence, in their language, that you will check, then call check_availability now and offer only the times it returns.';
 // Gemini wrote down what the caller said but gave no answer this long (a short «بله» it let pass): it is told
-// what it heard, instead of the caller being asked the same question again
-const HEARD_WAIT_MS = 3000;
+// what it heard, instead of the caller being asked the same question again (5 s: at 3 s Gemini was sometimes
+// still answering, and then answered twice)
+const HEARD_WAIT_MS = 5000;
 const SILENCE_NUDGE_MS = 15000; // after both re-asks the caller still says nothing this long: the AI thanks them and ends the call
 const REASK_MS = 5000; // the AI asked and the caller says nothing this long: the AI asks again (callers do not wait in silence)
 const REASK = 'The caller has not answered for about 5 seconds. Say out loud now only your last question again, short, in the caller\'s language (after the opening: just "How can I help you?"). Add nothing else: never say they have not answered.';
