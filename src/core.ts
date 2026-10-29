@@ -38,7 +38,9 @@ export function coreClient(o: { url: string; secret: string; fetch?: typeof fetc
       });
       return (Array.isArray(r?.results) ? r.results : []) as { toolCallId: string; name: string; result: string }[];
     },
-    end: (c: CallIds, x: { startedAt: string; endedAt: string; endedReason: string }) => send({ type: 'end-of-call-report', ...call(c), ...x }),
+    /** The call's end: its length and why it ended, and its text (barber-core keeps it for the superadmins). */
+    end: (c: CallIds, x: { startedAt: string; endedAt: string; endedReason: string; transcript?: { speaker: string; body: string; at_ms: number }[] }) =>
+      send({ type: 'end-of-call-report', ...call(c), ...x }),
   };
 }
 

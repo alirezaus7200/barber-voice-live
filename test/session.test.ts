@@ -118,7 +118,10 @@ describe('a call', () => {
     await new Promise((r) => setImmediate(r));
     assert.match(h.updates[0], /<Number>\+14015550100<\/Number>/);
     assert.match(h.updates[0], /callerId="\+12013702511"/);
-    assert.deepEqual(h.core.at(-1), ['end', { startedAt: '2026-10-22T15:00:00.000Z', endedAt: '2026-10-22T15:00:00.000Z', endedReason: 'assistant-forwarded-call' }]);
+    const { transcript, ...end } = h.core.at(-1)[1];
+    assert.equal(h.core.at(-1)[0], 'end');
+    assert.deepEqual(end, { startedAt: '2026-10-22T15:00:00.000Z', endedAt: '2026-10-22T15:00:00.000Z', endedReason: 'assistant-forwarded-call' });
+    assert.ok(transcript.some((l: any) => l.speaker === 'tool' && l.body.startsWith('check_availability → {"ok":true')), 'tool results are in the call\'s text');
   });
 
   it('barber-core says the number cannot take calls: a short notice and hang up, no Gemini', async () => {
@@ -295,6 +298,40 @@ describe('a call', () => {
     const silent = Buffer.alloc(160, 0xff).toString('base64');
     for (let i = 0; i < 4; i++) { clock.t += 1500; h.s.fromCaller(silent); }
     assert.equal(h.sentToGemini.filter((m) => m.clientContent).length, before, 'nothing is sent: the AI would ask its question again');
+  });
+
+  it('the call\'s text goes to barber-core at the end: the opening, the AI\'s and the caller\'s words in pieces joined per turn, tools, and the server\'s notes', async () => {
+    const clock = { t: Date.parse('2026-10-22T15:00:00Z') };
+    const h = harness(OPEN, (list) => list.map((t) => ({ toolCallId: t.id, name: t.name, result: '{"ok":true,"slots":[]}' })), clock);
+    await h.s.start('MZ1', ids);
+    h.gem().onOpen();
+    await h.gem().onMessage(JSON.stringify({ setupComplete: {} }));
+    await h.gem().onMessage(JSON.stringify({ serverContent: { outputTranscription: { text: 'با Test Salon ' } } }));
+    await h.gem().onMessage(JSON.stringify({ serverContent: { outputTranscription: { text: 'تماس گرفته‌اید.' } } }));
+    await heard(h);
+    clock.t += 3000;
+    await h.gem().onMessage(JSON.stringify({ serverContent: { inputTranscription: { text: ' یه نوبت' } } }));
+    await h.gem().onMessage(JSON.stringify({ serverContent: { inputTranscription: { text: ' می‌خواستم' } } }));
+    await h.gem().onMessage(JSON.stringify({ toolCall: { functionCalls: [{ id: 'c1', name: 'check_availability', args: { date: '2026-10-23' } }] } }));
+    await new Promise((r) => setImmediate(r));
+    await h.gem().onMessage(JSON.stringify({ serverContent: { outputTranscription: { text: 'Erfan is free at 9.' } } }));
+    await h.gem().onMessage(JSON.stringify({ serverContent: { turnComplete: true } }));
+    h.s.played();
+    const silent = Buffer.alloc(160, 0xff).toString('base64');
+    clock.t += 6000; h.s.fromCaller(silent); // a re-ask: the server's note is in the text too
+    await h.s.finish();
+    const [kind, report] = h.core.at(-1);
+    assert.equal(kind, 'end');
+    assert.deepEqual(report.transcript.map((l: any) => [l.speaker, l.body, l.at_ms]), [
+      ['ai', 'با Test Salon تماس گرفته‌اید.', 0],
+      ['tool', 'previous_visit_reminder → {"ok":true,"slots":[]}', 0], // looked up by this server after the opening
+      ['caller', 'یه نوبت می‌خواستم', 3000],
+      ['tool', 'check_availability {"date":"2026-10-23"}', 3000],
+      ['tool', 'check_availability → {"ok":true,"slots":[]}', 3000],
+      ['ai', 'Erfan is free at 9.', 3000],
+      ['system', 'reask {"n":1,"loudMsAgo":6000,"callerPeak":0,"heardChars":0}', 9000],
+      ['system', 'call_ended {"reason":"customer-ended-call"}', 9000],
+    ]);
   });
 
   it('the AI asked and the caller says nothing for 5 s: it asks again; still nothing: the barber or a message', async () => {

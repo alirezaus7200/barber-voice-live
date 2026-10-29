@@ -51,6 +51,13 @@ const OPENING_MAX_MS = 20000; // Twilio never confirmed the opening was played: 
 const SPEECH_PEAK = 700; // of 32767: a voice, even on a speakerphone (quieter than a handset); above the line's hiss
 const SILENCE_NUDGE = 'The caller has not answered at all. Thank them for calling, say they are welcome to call again to book their appointment, then call end_call. Say it in the caller\'s last language.';
 
+// What the phone server did that also goes into the call's text (barber-core keeps it for the superadmins)
+const NOTE_EVENTS = new Set(['reask', 'silence_nudge', 'time_nudge', 'false_claim_corrected', 'unchecked_times_corrected',
+  'end_call_refused', 'language_locked', 'gemini_retry', 'gemini_go_away', 'core_tools_failed', 'tool_unknown',
+  'tool_before_opening', 'opening_again', 'twilio_update_failed', 'call_ended']);
+const TRANSCRIPT_MAX_CHARS = 200_000; // a long call's text stays a small report
+type TranscriptLine = { speaker: 'ai' | 'caller' | 'tool' | 'system'; body: string; at_ms: number };
+
 export class CallSession {
   private gemini: SocketLike | null = null;
   private ready = false;
@@ -75,6 +82,11 @@ export class CallSession {
   private uncheckedTimes = 0; // times offered before any check: corrected (at most twice a call)
   private lastAiAudioAt = 0;
   private lastLoudAt = 0;
+  // the call's text, in order: the AI's and the caller's words (Gemini's transcriptions), tools, the server's notes
+  private transcript: TranscriptLine[] = [];
+  private transcriptChars = 0;
+  private aiLine: TranscriptLine | null = null; // the AI's turn being written down
+  private callerLine: TranscriptLine | null = null; // the caller's words since the AI last finished a turn
   private callerPeak = 0; // the caller's loudest frame since the AI last finished a turn (of 32767)
   private heardChars = 0; // how much Gemini wrote down of the caller since then (a count only, never the words)
   private toolsRunning = 0;
@@ -112,7 +124,7 @@ export class CallSession {
     try {
       r = await this.deps.core.start(this.ids, this.deps.speak ? this.deps.voice : undefined);
     } catch (e: any) {
-      this.deps.log('core_start_failed', { call: p.callSid, error: String(e?.message ?? e) });
+      this.log('core_start_failed', { call: p.callSid, error: String(e?.message ?? e) });
       r = { error: 'Sorry, this number cannot take calls right now. Please try again later.' };
     }
     if (r?.destination?.number) return this.handOff(dialTwiml(r.destination.number, p.from) ?? sayTwiml(''), 'assistant-forwarded-call');
@@ -128,19 +140,19 @@ export class CallSession {
     // barber-core keeps it once made; else it is made while Gemini connects and kept for the next calls
     if (typeof r.openingAudio === 'string' && r.openingAudio && this.deps.speak) {
       this.openingAudio = Promise.resolve(r.openingAudio);
-      this.deps.log('opening_audio', { source: 'stored' });
+      this.log('opening_audio', { source: 'stored' });
     } else if (this.deps.speak && this.opening) {
       const text = this.opening;
       this.openingAudio = this.deps.speak(text).catch(() => null);
       void this.openingAudio.then((audio) => {
         if (!audio) return;
         this.deps.core.saveOpening(this.ids, { voice: this.deps.voice, text, audio })
-          .then((x: any) => this.deps.log('opening_audio', { source: 'made', kept: x?.ok === true }))
-          .catch((e: any) => this.deps.log('opening_audio_not_kept', { error: String(e?.message ?? e).slice(0, 100) }));
+          .then((x: any) => this.log('opening_audio', { source: 'made', kept: x?.ok === true }))
+          .catch((e: any) => this.log('opening_audio_not_kept', { error: String(e?.message ?? e).slice(0, 100) }));
       });
     }
     // the salon's date and time the AI is told (no caller data), to check a wrong "tomorrow"
-    this.deps.log('call_date', { now: String(this.variables.current_local_datetime ?? ''), days: String(this.variables.upcoming_days ?? '').slice(0, 120) });
+    this.log('call_date', { now: String(this.variables.current_local_datetime ?? ''), days: String(this.variables.upcoming_days ?? '').slice(0, 120) });
     this.connectGemini();
   }
 
@@ -166,7 +178,7 @@ export class CallSession {
           this.retried = true;
           this.ready = false;
           if (!this.openingHeard) this.openingSpoken = false;
-          this.deps.log('gemini_retry', { reason: 'refused at start' });
+          this.log('gemini_retry', { reason: 'refused at start' });
           this.connectGemini(true);
           return;
         }
@@ -180,7 +192,7 @@ export class CallSession {
   private warnTimeLeft() {
     if (this.closed || !this.gemini) return;
     this.refusedEnd = true;
-    this.deps.log('time_nudge', { secondsLeft: TIME_WARNING_S });
+    this.log('time_nudge', { secondsLeft: TIME_WARNING_S });
     this.gemini.send(JSON.stringify({ clientContent: { turns: [{ role: 'user', parts: [{ text: TIME_NUDGE }] }], turnComplete: true } }));
   }
 
@@ -195,7 +207,7 @@ export class CallSession {
       if (!this.aiWaitingSince && !this.toolsRunning && !this.hangUpWhenSaid
           && now - this.lastAiAudioAt > WAIT_RESTART_MS && now - this.lastLoudAt > CALLER_PAUSE_MS) {
         this.aiWaitingSince = now;
-        this.deps.log('wait_restarted', {});
+        this.log('wait_restarted', {});
       }
       const peak = peakOf(pcm);
       if (peak > this.callerPeak) this.callerPeak = peak;
@@ -205,17 +217,17 @@ export class CallSession {
         this.lastLoudAt = now;
       } else if (this.aiWaitingSince && now - this.aiWaitingSince > REASK_MS && this.reasks < this.maxReasks() && !this.hangUpWhenSaid) {
         this.reasks += 1;
-        if (this.nudgePending) this.deps.log('nudge_unanswered', {}); // Gemini said nothing to the last one
+        if (this.nudgePending) this.log('nudge_unanswered', {}); // Gemini said nothing to the last one
         // still counting: if Gemini says nothing to this either, the next step still comes (never a silent line)
         this.aiWaitingSince = now;
         this.nudgePending = true;
         // loudMsAgo: how long ago the line was last loud (the caller may have answered and Gemini missed it)
-        this.deps.log('reask', { n: this.reasks, loudMsAgo: this.lastLoudAt ? Math.min(now - this.lastLoudAt, 99999) : -1, callerPeak: this.callerPeak, heardChars: this.heardChars });
+        this.log('reask', { n: this.reasks, loudMsAgo: this.lastLoudAt ? Math.min(now - this.lastLoudAt, 99999) : -1, callerPeak: this.callerPeak, heardChars: this.heardChars });
         this.gemini.send(JSON.stringify({ clientContent: { turns: [{ role: 'user', parts: [{ text: this.reasks === 1 ? REASK : REASK_OFFER }] }], turnComplete: true } }));
       } else if (this.aiWaitingSince && this.reasks >= this.maxReasks() && !this.nudged
                  && now - this.aiWaitingSince > (this.talked ? SILENCE_NUDGE_MS : FIRST_SILENCE_NUDGE_MS)) {
         this.nudged = true;
-        this.deps.log('silence_nudge', { silentSeconds: Math.round((now - this.aiWaitingSince) / 1000), callerPeak: this.callerPeak, heardChars: this.heardChars });
+        this.log('silence_nudge', { silentSeconds: Math.round((now - this.aiWaitingSince) / 1000), callerPeak: this.callerPeak, heardChars: this.heardChars });
         this.aiWaitingSince = 0;
         this.nudgePending = true;
         // this goodbye ends the call, whether or not the AI also calls end_call: hang up once it was played
@@ -237,6 +249,7 @@ export class CallSession {
     if (this.openingPlayed || audio) {
       if (audio) {
         this.openingPlayed = true;
+        this.line('ai', this.opening); // our ready-made audio: Gemini did not say it, so it has no transcription
         this.openingSpoken = true;
         this.step('first_audio');
         this.firstAudio = true;
@@ -247,10 +260,10 @@ export class CallSession {
         this.twilio.send(JSON.stringify({ event: 'mark', streamSid: this.streamSid, mark: { name: 'opening' } }));
         this.timers.push(this.deps.setTimer(OPENING_MAX_MS, () => {
           if (this.openingHeard || this.closed) return;
-          this.deps.log('opening_mark_missing', {});
+          this.log('opening_mark_missing', {});
           this.played('opening');
         }));
-        this.deps.log('opening_played', { source: 'tts' });
+        this.log('opening_played', { source: 'tts' });
       }
       // Gemini knows from its instructions that the phone plays the opening: nothing is sent to it now
       // (a text turn here was answered as if the caller had spoken)
@@ -263,7 +276,7 @@ export class CallSession {
   /** The AI disclosure and the recording notice come first, word for word (barber-core's opening). */
   private askOpening() {
     this.openingTries += 1;
-    if (this.openingTries > 1) this.deps.log('opening_again', { tries: this.openingTries });
+    if (this.openingTries > 1) this.log('opening_again', { tries: this.openingTries });
     this.gemini?.send(JSON.stringify({ clientContent: {
       turns: [{ role: 'user', parts: [{ text: `The call has started. Say exactly this, then wait for the caller: "${this.opening}"` }] }],
       turnComplete: true,
@@ -280,13 +293,42 @@ export class CallSession {
   /** The caller's language, fixed by barber-core (set_caller_language): told to Gemini in the tool's answer. */
   private languageNote(code: string): string {
     const name = LANGUAGE_NAMES[code.split('-')[0]] ?? code;
-    this.deps.log('language_locked', { language: code });
+    this.log('language_locked', { language: code });
     return `The caller speaks ${name}. From now on listen for ${name} and answer only in ${name}, unless the caller clearly switches to another language.`;
   }
 
   /** Start-up timing: how long after Twilio's start each step came (the caller hears nothing until first_audio). */
   private step(name: string) {
-    this.deps.log('start_timing', { step: name, ms: this.deps.now().getTime() - this.t0, retried: this.retried });
+    this.log('start_timing', { step: name, ms: this.deps.now().getTime() - this.t0, retried: this.retried });
+  }
+
+  private log(event: string, data: Record<string, unknown>) {
+    this.deps.log(event, data);
+    if (NOTE_EVENTS.has(event)) this.line('system', `${event} ${JSON.stringify(data)}`);
+  }
+
+  /** A new line of the call's text (none once the text is long enough). */
+  private line(speaker: TranscriptLine['speaker'], body: string): TranscriptLine | null {
+    const text = body.slice(0, 2000); // pieces keep their spaces; the report trims each line
+    if (!text.trim() || this.transcriptChars + text.length > TRANSCRIPT_MAX_CHARS || this.transcript.length >= 2000) return null;
+    const l = { speaker, body: text, at_ms: Math.max(0, this.deps.now().getTime() - (this.t0 || this.deps.now().getTime())) };
+    this.transcript.push(l);
+    this.transcriptChars += text.length;
+    return l;
+  }
+
+  /** More words of the AI's or the caller's current line (Gemini sends them in pieces). */
+  private words(speaker: 'ai' | 'caller', piece: string) {
+    const open = speaker === 'ai' ? this.aiLine : this.callerLine;
+    if (open) {
+      const room = Math.min(2000 - open.body.length, TRANSCRIPT_MAX_CHARS - this.transcriptChars);
+      const add = piece.slice(0, Math.max(0, room));
+      open.body += add;
+      this.transcriptChars += add.length;
+      return;
+    }
+    const l = this.line(speaker, piece);
+    if (speaker === 'ai') this.aiLine = l; else this.callerLine = l;
   }
 
   /** The caller's last visit, looked up here right after the opening (the AI said "one moment" before the tool). */
@@ -297,7 +339,8 @@ export class CallSession {
       res = JSON.parse(r.find((x) => x.toolCallId === 'previous-visit')?.result ?? 'null');
     } catch { /* no reminder: the call goes on */ }
     if (!res) return;
-    this.deps.log('tool_result', { tool: 'previous_visit_reminder', ok: res.ok === true, ...(res.remind === true ? { remind: true } : {}) });
+    this.log('tool_result', { tool: 'previous_visit_reminder', ok: res.ok === true, ...(res.remind === true ? { remind: true } : {}) });
+    this.line('tool', `previous_visit_reminder → ${JSON.stringify(res).slice(0, 500)}`);
     if (this.closed || res.ok !== true || res.remind !== true || typeof res.spoken !== 'string' || !res.spoken.trim()) return;
     const spoken = res.spoken.replace(/["\\]/g, ' ').slice(0, 300);
     this.gemini?.send(JSON.stringify({ clientContent: { turns: [{ role: 'user', parts: [{ text: `Note from the phone system: say this to the caller now, exactly, in one short turn: "${spoken}". If they already asked for something, answer that instead and leave this out.` }] }], turnComplete: true } }));
@@ -309,7 +352,7 @@ export class CallSession {
     if (this.outcome || this.falseClaims >= 2 || !DONE_CLAIM.test(this.turnText)) return;
     this.falseClaims++;
     this.turnText = '';
-    this.deps.log('false_claim_corrected', {});
+    this.log('false_claim_corrected', {});
     // the call does not end on it: the next end_call is refused until something really happened
     this.refusedEnd = false;
     this.gemini?.send(JSON.stringify({ clientContent: { turns: [{ role: 'user', parts: [{ text: FALSE_CLAIM }] }], turnComplete: true } }));
@@ -319,7 +362,7 @@ export class CallSession {
   private checkTimes() {
     if (this.timesChecked || this.turnTool || this.toolsRunning || this.uncheckedTimes >= 2 || !TIME_SAID.test(this.turnText)) return;
     this.uncheckedTimes++;
-    this.deps.log('unchecked_times_corrected', {});
+    this.log('unchecked_times_corrected', {});
     this.gemini?.send(JSON.stringify({ clientContent: { turns: [{ role: 'user', parts: [{ text: UNCHECKED_TIMES }] }], turnComplete: true } }));
   }
 
@@ -345,11 +388,12 @@ export class CallSession {
     let m: any;
     try { m = JSON.parse(text); } catch { return; }
     // Gemini says it will close the session soon (goAway): log why, so a short call can be explained
-    if (m.goAway) this.deps.log('gemini_go_away', { timeLeft: String(m.goAway.timeLeft ?? '') });
+    if (m.goAway) this.log('gemini_go_away', { timeLeft: String(m.goAway.timeLeft ?? '') });
     // Gemini heard the caller (inputAudioTranscription): they answered, even if too quietly for our meter, so no
     // re-ask now (a re-ask over a quiet "yes" made the AI ask again, or offer a message instead of booking)
     const heardText = m.serverContent?.inputTranscription?.text;
     if (typeof heardText === 'string') this.heardChars += heardText.trim().length;
+    if (typeof heardText === 'string' && heardText.trim()) this.words('caller', heardText);
     if (typeof heardText === 'string' && heardText.trim()) {
       this.aiWaitingSince = 0;
       this.lastLoudAt = this.deps.now().getTime();
@@ -360,25 +404,28 @@ export class CallSession {
       if (!this.openingHeard) void this.startOpening();
     }
     const said = m.serverContent?.outputTranscription?.text;
-    if (typeof said === 'string' && said) this.checkClaim(said);
+    if (typeof said === 'string' && said) { this.checkClaim(said); this.words('ai', said); }
+    if (m.serverContent?.interrupted) this.aiLine = null;
     for (const part of m.serverContent?.modelTurn?.parts ?? []) {
       if (part?.inlineData?.data && this.muted) continue;
       if (part?.inlineData?.data) {
         this.lastAiAudioAt = this.deps.now().getTime();
         this.aiWaitingSince = 0;
         // how loud the caller was and how much Gemini wrote down before this answer: a quiet line shows here
-        if (!this.turnAudio && this.openingHeard) this.deps.log('caller_turn', { callerPeak: this.callerPeak, heardChars: this.heardChars });
+        if (!this.turnAudio && this.openingHeard) this.log('caller_turn', { callerPeak: this.callerPeak, heardChars: this.heardChars });
         this.turnAudio = true;
         this.openingSpoken = true;
         if (!this.nudgePending) { this.reasks = 0; if (this.openingHeard) this.talked = true; }
         if (this.toolAnsweredAt) {
-          this.deps.log('gemini_reply', { ms: this.deps.now().getTime() - this.toolAnsweredAt });
+          this.log('gemini_reply', { ms: this.deps.now().getTime() - this.toolAnsweredAt });
           this.toolAnsweredAt = 0;
         } // the AI answers the caller (who may speak too quietly for the meter)
       }
       if (part?.inlineData?.data && !this.firstAudio) { this.firstAudio = true; this.step('first_audio'); }
       if (part?.inlineData?.data) this.twilio.send(JSON.stringify({ event: 'media', streamSid: this.streamSid, media: { payload: geminiToPhone(part.inlineData.data, part.inlineData.mimeType) } }));
     }
+    // a turn is over: the next words are new lines (the caller's late words before it still join their line)
+    if (m.serverContent?.turnComplete) { this.aiLine = null; this.callerLine = null; }
     if (m.serverContent?.turnComplete && !this.openingHeard && !this.hangUpWhenSaid) {
       const said = this.turnAudio;
       this.turnAudio = false;
@@ -386,7 +433,7 @@ export class CallSession {
       this.twilio.send(JSON.stringify({ event: 'mark', streamSid: this.streamSid, mark: { name: 'opening' } }));
       this.timers.push(this.deps.setTimer(OPENING_MAX_MS, () => {
         if (this.openingHeard || this.closed) return;
-        this.deps.log('opening_mark_missing', {});
+        this.log('opening_mark_missing', {});
         this.played('opening');
       }));
       return;
@@ -430,11 +477,12 @@ export class CallSession {
     const responses: { id: string; name: string; response: unknown }[] = [];
     // every function call Gemini asks for, by name only (never the arguments: they hold the caller's data), so a
     // call that offered times without check_availability shows in the logs
-    this.deps.log('tool_call', { tools: calls.map((c) => String(c.name).slice(0, 40)) });
+    this.log('tool_call', { tools: calls.map((c) => String(c.name).slice(0, 40)) });
+    for (const c of calls) this.line('tool', `${String(c.name).slice(0, 40)} ${JSON.stringify(c.args ?? {}).slice(0, 500)}`);
     this.turnTool = true;
     if (!this.openingSpoken) {
       // e.g. previous_visit_reminder before a word was said: the caller would wait in silence and miss the disclosure
-      this.deps.log('tool_before_opening', { tools: calls.map((c) => c.name) });
+      this.log('tool_before_opening', { tools: calls.map((c) => c.name) });
       const response = { ok: false, reason: 'say_opening_first', hint: `First say the opening, word for word: "${this.opening}"` };
       this.gemini?.send(JSON.stringify({ toolResponse: { functionResponses: calls.map((c) => ({ id: c.id, name: c.name, response })) } }));
       return;
@@ -446,9 +494,9 @@ export class CallSession {
         const t = this.deps.now().getTime();
         results = await this.deps.core.tools(this.ids, forCore.map((c) => ({ id: c.id, name: c.name, args: c.args ?? {} })));
         // how long barber-core took (a long pause in a call is either this or gemini_reply)
-        this.deps.log('tool_timing', { tools: forCore.map((c) => c.name), ms: this.deps.now().getTime() - t });
+        this.log('tool_timing', { tools: forCore.map((c) => c.name), ms: this.deps.now().getTime() - t });
       } catch (e: any) {
-        this.deps.log('core_tools_failed', { call: this.ids.callSid, error: String(e?.message ?? e) });
+        this.log('core_tools_failed', { call: this.ids.callSid, error: String(e?.message ?? e) });
       }
     }
     for (const c of calls) {
@@ -457,7 +505,7 @@ export class CallSession {
         // (never after the silence goodbye: that one ends the call on purpose)
         if (!this.outcome && !this.refusedEnd && !this.hangUpWhenSaid) {
           this.refusedEnd = true;
-          this.deps.log('end_call_refused', {});
+          this.log('end_call_refused', {});
           responses.push({ id: c.id, name: c.name, response: { ok: false, reason: 'not_finished', hint: 'Ask whether the caller wants to book or leave a message before you end the call.' } });
           continue;
         }
@@ -471,15 +519,16 @@ export class CallSession {
         continue;
       }
       if (!CORE_TOOL_NAMES.has(c.name)) {
-        this.deps.log('tool_unknown', { tool: String(c.name).slice(0, 40) });
+        this.log('tool_unknown', { tool: String(c.name).slice(0, 40) });
         responses.push({ id: c.id, name: c.name, response: { ok: false, reason: 'unknown_tool' } });
         continue;
       }
       const raw = results.find((x) => x.toolCallId === c.id)?.result;
+      this.line('tool', `${c.name} → ${String(raw ?? 'no answer').slice(0, 500)}`);
       let result: any = { ok: false, reason: 'system_error' };
       try { if (raw) result = JSON.parse(raw); } catch { /* keep system_error */ }
       // the reason code only (e.g. slot_taken), never the arguments or the caller's data
-      this.deps.log('tool_result', { tool: c.name, ok: result?.ok === true, ...(result?.ok === true ? {} : { reason: String(result?.reason ?? '').slice(0, 40) }) });
+      this.log('tool_result', { tool: c.name, ok: result?.ok === true, ...(result?.ok === true ? {} : { reason: String(result?.reason ?? '').slice(0, 40) }) });
       if (result?.ok === true && ['check_availability', 'find_my_appointments'].includes(c.name)) this.timesChecked = true;
       if (result?.ok === true && ['book_appointment', 'take_message', 'transfer_to_human', 'cancel_appointment', 'reschedule_appointment'].includes(c.name)) this.outcome = true;
       // the call's language is fixed: Gemini listens for it and answers only in it from now on
@@ -500,7 +549,7 @@ export class CallSession {
   private async handOff(twiml: string, reason: string) {
     this.endedReason = reason;
     const r = await this.deps.updateCall(this.ids.callSid, twiml);
-    if (!r.ok) this.deps.log('twilio_update_failed', { call: this.ids.callSid, error: r.error ?? '' });
+    if (!r.ok) this.log('twilio_update_failed', { call: this.ids.callSid, error: r.error ?? '' });
     await this.finish();
   }
 
@@ -514,14 +563,15 @@ export class CallSession {
   async finish() {
     if (this.closed) return;
     this.closed = true;
-    this.deps.log('call_ended', { reason: this.endedReason });
+    this.log('call_ended', { reason: this.endedReason });
     for (const t of this.timers) this.deps.clearTimer(t);
     this.gemini?.close();
     if (!this.ids.callSid) return;
     try {
-      await this.deps.core.end(this.ids, { startedAt: this.started, endedAt: this.deps.now().toISOString(), endedReason: this.endedReason });
+      await this.deps.core.end(this.ids, { startedAt: this.started, endedAt: this.deps.now().toISOString(), endedReason: this.endedReason,
+        transcript: this.transcript.map((l) => ({ ...l, body: l.body.trim() })).filter((l) => l.body) });
     } catch (e: any) {
-      this.deps.log('core_end_failed', { call: this.ids.callSid, error: String(e?.message ?? e) });
+      this.log('core_end_failed', { call: this.ids.callSid, error: String(e?.message ?? e) });
     }
   }
 }
