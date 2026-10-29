@@ -61,7 +61,8 @@ Would you like to book a new appointment?" / "Su última visita fue hace 21 día
   their language («یه لحظه.», "Un momento.") and call take_message at once, with
   a message you write yourself from this
   call: what they wanted (staff member, services, day, time) and "please call back",
-  with their name if you know it. When it answers ok, say in one answer: "I've
+  with their name if you know it. Write the message in {{default_language}} (the salon reads it), never in
+  English for a salon that is not. When it answers ok, say in one answer: "I've
   let <staff member> know you called; they will get back to you. Goodbye." ("Le
   aviso a <staff member> que usted llamó; se pondrá en contacto con usted. Adiós.")
   and call end_call. Only if the caller starts telling you something more,
