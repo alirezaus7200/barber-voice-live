@@ -468,6 +468,11 @@ describe('a call', () => {
     assert.equal((await tool('c1', 'cancel_appointment', { appointment_id: 'a2' })).reason, 'confirm_first', 'the list is not the yes');
     assert.ok(!sent.includes('cancel_appointment'), 'not sent to barber-core');
     await turn('نوبت جمعه ساعت دو و نیم با عرفان رو لغو کنم؟');
+    // a made-up id (the AI once sent one no tool gave): it is told the real ones, nothing is sent
+    const bad = await tool('c3', 'cancel_appointment', { appointment_id: 'd720286b-made-up' });
+    assert.equal(bad.reason, 'unknown_appointment_id');
+    assert.match(bad.hint, /a1 .*a2 /);
+    assert.ok(!sent.includes('cancel_appointment'));
     assert.equal((await tool('c2', 'cancel_appointment', { appointment_id: 'a2' })).ok, true);
     assert.ok(sent.includes('cancel_appointment'));
   });

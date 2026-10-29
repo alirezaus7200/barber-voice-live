@@ -78,7 +78,7 @@ const SILENCE_NUDGE = (lang: string) => `The caller has not answered at all. Tha
 const NOTE_EVENTS = new Set(['reask', 'silence_nudge', 'time_nudge', 'false_claim_corrected', 'unchecked_times_corrected',
   'end_call_refused', 'language_locked', 'gemini_retry', 'gemini_go_away', 'core_tools_failed', 'tool_unknown',
   'tool_before_opening', 'opening_again', 'twilio_update_failed', 'call_ended', 'gemini_setup', 'repeat_muted',
-  'cancel_confirm_missing', 'read_back_missing']);
+  'cancel_confirm_missing', 'read_back_missing', 'appointment_id_unknown']);
 const TRANSCRIPT_MAX_CHARS = 200_000; // a long call's text stays a small report
 type TranscriptLine = { speaker: 'ai' | 'caller' | 'tool' | 'system'; body: string; at_ms: number };
 
@@ -110,6 +110,8 @@ export class CallSession {
   private listText = ''; // that turn's words (the list, not the confirmation)
   private apptCount = 0;
   private cancelRefused = 0;
+  private apptIds = new Map<string, string>(); // the caller's appointments this call found: id -> its time
+  private badIdTold = 0;
   private askedAt = 0; // when the AI last asked something (a ? in its words)
   private callerAt = 0; // when the caller last said something
   private endRefusedForQuestion = 0;
@@ -621,8 +623,20 @@ export class CallSession {
     }
     // a booking with no read-back before it is not sent: the AI reads back first (once a call)
     const held = new Set<string>();
+    // an appointment id the AI made up (not one find_my_appointments gave): it is told the real ones, never sent
+    const badId = new Map<string, unknown>();
+    for (const c of calls) {
+      const id = (c.args as any)?.appointment_id;
+      if ((c.name === 'cancel_appointment' || c.name === 'reschedule_appointment') && this.apptIds.size && !this.apptIds.has(id) && this.badIdTold < 2) {
+        this.badIdTold += 1;
+        this.log('appointment_id_unknown', {});
+        badId.set(c.id, { ok: false, reason: 'unknown_appointment_id',
+          hint: `Use an appointment_id exactly as find_my_appointments gave it: ${[...this.apptIds].map(([i, t]) => `${i} (${t})`).join(', ')}.` });
+      }
+    }
     for (const c of calls) {
       const args = c.args as any;
+      if (badId.has(c.id)) { held.add(c.id); continue; }
       if (c.name === 'cancel_appointment' && this.cancelRefused < 1 && !this.cancelConfirmed()) {
         held.add(c.id);
         this.cancelRefused += 1;
@@ -648,6 +662,11 @@ export class CallSession {
       }
     }
     for (const c of calls) {
+      if (badId.has(c.id)) {
+        this.line('tool', `${c.name} → held: unknown appointment id`);
+        responses.push({ id: c.id, name: c.name, response: badId.get(c.id) });
+        continue;
+      }
       if (held.has(c.id)) {
         const cancel = c.name === 'cancel_appointment';
         this.line('tool', `${c.name} → held: ${cancel ? 'confirm first' : 'read back first'}`);
@@ -693,7 +712,11 @@ export class CallSession {
       this.log('tool_result', { tool: c.name, ok: result?.ok === true, ...(result?.ok === true ? {} : { reason: String(result?.reason ?? '').slice(0, 40) }) });
       if (result?.ok === true && ['check_availability', 'find_my_appointments'].includes(c.name)) this.timesChecked = true;
       if (c.name === 'check_availability' && result?.ok === true && Array.isArray(result.slots)) this.rememberSlots(result.slots);
-      if (c.name === 'find_my_appointments' && result?.ok === true && Array.isArray(result.appointments)) { this.apptCount = result.appointments.length; this.listingPending = true; }
+      if (c.name === 'find_my_appointments' && result?.ok === true && Array.isArray(result.appointments)) {
+        this.apptCount = result.appointments.length;
+        this.listingPending = true;
+        for (const a of result.appointments) if (typeof a?.appointment_id === 'string') this.apptIds.set(a.appointment_id, `${a.local_date ?? ''} ${a.local_time ?? ''}`.trim());
+      }
       if (result?.ok === true && ['book_appointment', 'take_message', 'transfer_to_human', 'cancel_appointment', 'reschedule_appointment'].includes(c.name)) this.outcome = true;
       // the call's language is fixed: Gemini listens for it and answers only in it from now on
       if (c.name === 'set_caller_language' && result?.ok === true && typeof result.language === 'string') {
