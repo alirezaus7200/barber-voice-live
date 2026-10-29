@@ -446,6 +446,32 @@ describe('a call', () => {
     assert.deepEqual(sentToCore.filter((n) => n !== 'previous_visit_reminder'), ['check_availability', 'book_appointment']);
   });
 
+  it('cancel_appointment only after a question about that one appointment: the list of the caller\'s appointments is not it (once)', async () => {
+    const appts = [{ appointment_id: 'a1', local_time: '09:00' }, { appointment_id: 'a2', local_time: '14:30' }];
+    const sent: string[] = [];
+    const h = harness(OPEN, (list) => list.map((t) => { sent.push(t.name); return { toolCallId: t.id, name: t.name, result: JSON.stringify(t.name === 'find_my_appointments' ? { ok: true, appointments: appts } : { ok: true }) }; }));
+    await h.s.start('MZ1', ids);
+    h.gem().onOpen();
+    await h.gem().onMessage(JSON.stringify({ setupComplete: {} }));
+    await heard(h);
+    const tool = async (id: string, name: string, args: unknown = {}) => {
+      await h.gem().onMessage(JSON.stringify({ toolCall: { functionCalls: [{ id, name, args }] } }));
+      await new Promise((r) => setImmediate(r));
+      return h.sentToGemini.at(-1).toolResponse.functionResponses[0].response;
+    };
+    const turn = async (text: string) => {
+      await h.gem().onMessage(JSON.stringify({ serverContent: { outputTranscription: { text } } }));
+      await h.gem().onMessage(JSON.stringify({ serverContent: { turnComplete: true } }));
+    };
+    await tool('f1', 'find_my_appointments');
+    await turn('دو تا نوبت دارید: جمعه ساعت نه صبح و جمعه ساعت دو و نیم. کدوم رو می‌خواید لغو کنید؟');
+    assert.equal((await tool('c1', 'cancel_appointment', { appointment_id: 'a2' })).reason, 'confirm_first', 'the list is not the yes');
+    assert.ok(!sent.includes('cancel_appointment'), 'not sent to barber-core');
+    await turn('نوبت جمعه ساعت دو و نیم با عرفان رو لغو کنم؟');
+    assert.equal((await tool('c2', 'cancel_appointment', { appointment_id: 'a2' })).ok, true);
+    assert.ok(sent.includes('cancel_appointment'));
+  });
+
   it('end_call while the caller has not answered the AI\'s question ("Anything else? Goodbye.") is refused; after the answer it ends', async () => {
     const h = harness(OPEN, (list) => list.map((t) => ({ toolCallId: t.id, name: t.name, result: '{"ok":true}' })));
     await h.s.start('MZ1', ids);
