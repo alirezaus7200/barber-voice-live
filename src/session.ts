@@ -45,10 +45,12 @@ const FALSE_CLAIM = 'Correction: nothing has been booked, cancelled or moved in 
 const TIME_SAID = /\b\d{1,2}[:.]\d{2}\b|[۰-۹]{1,2}[:٫][۰-۹]{2}|\b\d{1,2}\s?(a\.?m\.?|p\.?m\.?)(?![a-z])|ساعت\s*([\d۰-۹]|یک|دو|سه|چهار|پنج|شش|هفت|هشت|نه|ده|یازده|دوازده)|\ba las (\d|una|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez|once|doce)\b/i;
 const UNCHECKED_TIMES = 'Correction: the times you just said did not come from check_availability (it has not answered in this call), so they may not be free. Tell the caller in one short sentence, in their language, that you will check, then call check_availability now and offer only the times it returns.';
 // Our own turns (GEMINI_TURNS=ours): a turn starts when the caller's voice is clearly above the line's hiss (a
-// louder one while the AI is talking, so its echo does not cut it off), with the last ~200 ms before it, and
-// ends after 700 ms of quiet; Gemini then answers every turn, however short («بله»).
+// louder one while the AI's words are still playing at the caller, so its echo does not cut it off), with the last
+// ~200 ms before it, and ends after 700 ms of quiet; Gemini then answers every turn, however short («بله»).
+// "Still playing" is the audio sent to Twilio, by its length (not Gemini's turn, which also lasts through tools):
+// at 4000 while the whole turn counted, a quick «برای فردا می‌خوام» right after the question never reached Gemini.
 const TURN_START_PEAK = 1500;
-const TURN_START_PEAK_OVER_AI = 4000;
+const TURN_START_PEAK_OVER_AI = 2500;
 const TURN_END_QUIET_MS = 700;
 const TURN_PREROLL_FRAMES = 10; // Twilio sends 20 ms frames
 // book_appointment only after the read-back (hard rule): the AI's last turn before it must have said the chosen time,
@@ -112,6 +114,7 @@ export class CallSession {
   private transcriptChars = 0;
   private aiLine: TranscriptLine | null = null; // the AI's turn being written down
   private callerLine: TranscriptLine | null = null; // the caller's words since the AI last finished a turn
+  private playingUntil = 0; // when the AI audio already sent to Twilio ends playing at the caller (ms)
   private ourTurns = false; // this call marks the caller's turns itself (not on the plain retry)
   private inTurn = false;
   private turnQuietSince = 0;
@@ -284,7 +287,7 @@ export class CallSession {
     if (!this.inTurn) {
       this.preroll.push(audio);
       if (this.preroll.length > TURN_PREROLL_FRAMES) this.preroll.shift();
-      const aiTalking = this.turnAudio || now - this.lastAiAudioAt < 1500;
+      const aiTalking = now < this.playingUntil;
       if (peak <= (aiTalking ? TURN_START_PEAK_OVER_AI : TURN_START_PEAK)) return;
       this.inTurn = true;
       this.turnQuietSince = 0;
@@ -512,7 +515,14 @@ export class CallSession {
         } // the AI answers the caller (who may speak too quietly for the meter)
       }
       if (part?.inlineData?.data && !this.firstAudio) { this.firstAudio = true; this.step('first_audio'); }
-      if (part?.inlineData?.data) this.twilio.send(JSON.stringify({ event: 'media', streamSid: this.streamSid, media: { payload: geminiToPhone(part.inlineData.data, part.inlineData.mimeType) } }));
+      if (part?.inlineData?.data) {
+        const payload = geminiToPhone(part.inlineData.data, part.inlineData.mimeType);
+        // mu-law 8 kHz: one byte is 1/8 ms; base64 is 4 characters for 3 bytes
+        const ms = (payload.length * 3) / 4 / 8;
+        const t = this.deps.now().getTime();
+        this.playingUntil = Math.max(this.playingUntil, t) + ms;
+        this.twilio.send(JSON.stringify({ event: 'media', streamSid: this.streamSid, media: { payload } }));
+      }
     }
     // a turn is over: the next words are new lines (the caller's late words before it still join their line)
     if (m.serverContent?.turnComplete) { this.aiLine = null; this.callerLine = null; }
@@ -549,7 +559,10 @@ export class CallSession {
       }
     }
     // the caller spoke over the AI: drop what Twilio still has queued (never the opening)
-    if (m.serverContent?.interrupted && this.openingHeard) this.twilio.send(JSON.stringify({ event: 'clear', streamSid: this.streamSid }));
+    if (m.serverContent?.interrupted && this.openingHeard) {
+      this.twilio.send(JSON.stringify({ event: 'clear', streamSid: this.streamSid }));
+      this.playingUntil = this.deps.now().getTime(); // Twilio dropped what it still had: nothing plays now
+    }
     if (m.toolCall?.functionCalls?.length) this.aiWaitingSince = 0; // a tool runs: the caller is not being asked
     if (m.toolCall?.functionCalls?.length) await this.runTools(m.toolCall.functionCalls);
   }

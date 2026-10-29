@@ -213,7 +213,7 @@ describe('a call', () => {
     assert.equal(kinds().length, n, 'no audio between turns');
   });
 
-  it('our own turns: while the AI is talking only a clearly louder voice starts one (its echo does not cut it off)', async () => {
+  it('our own turns: while the AI\'s words still play at the caller only a louder voice starts one (its echo does not cut it off); then a normal one does', async () => {
     const clock = { t: Date.parse('2026-10-22T15:00:00Z') };
     const h = harness(OPEN, () => [], clock);
     (h.s as any).deps.ourTurns = true;
@@ -221,15 +221,15 @@ describe('a call', () => {
     h.gem().onOpen();
     await h.gem().onMessage(JSON.stringify({ setupComplete: {} }));
     await heard(h);
-    await speak(h); // the AI is talking
-    const echo = Buffer.alloc(160, 0xb8).toString('base64'); // ~2900: a mid-level line: above the hiss, below the louder mark
-    const from = h.sentToGemini.length;
+    // 2 s of the AI's words (24 kHz PCM), sent to Twilio at once: they play for 2 s
+    await h.gem().onMessage(JSON.stringify({ serverContent: { modelTurn: { parts: [{ inlineData: { mimeType: 'audio/pcm;rate=24000', data: Buffer.alloc(96_000).toString('base64') } }] } } }));
+    const echo = Buffer.alloc(160, 0xbc).toString('base64'); // ~2360: above the hiss, below the louder mark
+    const starts = () => h.sentToGemini.filter((m) => m.realtimeInput?.activityStart).length;
     for (let i = 0; i < 20; i++) { clock.t += 20; h.s.fromCaller(echo); }
-    assert.equal(h.sentToGemini.slice(from).filter((m) => m.realtimeInput?.activityStart).length, 0);
-    await h.gem().onMessage(JSON.stringify({ serverContent: { turnComplete: true } }));
-    clock.t += 2000; // the AI stopped: the same voice now starts a turn
+    assert.equal(starts(), 0, 'its own words, while they play');
+    clock.t += 1700; // played: the AI's turn may still go on (a tool), but nothing plays
     h.s.fromCaller(echo);
-    assert.equal(h.sentToGemini.slice(from).filter((m) => m.realtimeInput?.activityStart).length, 1);
+    assert.equal(starts(), 1, 'a normal voice right after the question starts a turn');
   });
 
   it('the start-of-speech settings from the host reach Gemini, and the call\'s text says which were used', async () => {
