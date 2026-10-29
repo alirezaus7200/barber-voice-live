@@ -151,6 +151,7 @@ describe('the booking steps in the prompt', () => {
     assert.ok(prompt.includes('If the caller has not said a day, ask it first'), 'the day is asked, not taken as today');
     assert.ok(prompt.includes('say how many there are\n   and their names'), 'how many staff members and who');
     assert.ok(prompt.includes('A caller who did not greet gets no greeting'));
+    assert.ok(prompt.includes('Write the message in {{default_language}} (the salon reads it)'));
     assert.ok(prompt.includes('say its day\n  exactly as its `day_spoken`'), 'the day as the tool says it');
     assert.ok(prompt.includes('never in the same turn\n   as "Anything else?"'), 'the goodbye waits for the answer');
     assert.ok(prompt.includes("A known caller's name is on file: never\n   ask it"));

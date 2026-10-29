@@ -78,7 +78,7 @@ const SILENCE_NUDGE = (lang: string) => `The caller has not answered at all. Tha
 const NOTE_EVENTS = new Set(['reask', 'silence_nudge', 'time_nudge', 'false_claim_corrected', 'unchecked_times_corrected',
   'end_call_refused', 'language_locked', 'gemini_retry', 'gemini_go_away', 'core_tools_failed', 'tool_unknown',
   'tool_before_opening', 'opening_again', 'twilio_update_failed', 'call_ended', 'gemini_setup', 'repeat_muted',
-  'cancel_confirm_missing', 'read_back_missing', 'appointment_id_unknown']);
+  'cancel_confirm_missing', 'read_back_missing', 'appointment_id_unknown', 'appointment_id_guessed']);
 const TRANSCRIPT_MAX_CHARS = 200_000; // a long call's text stays a small report
 type TranscriptLine = { speaker: 'ai' | 'caller' | 'tool' | 'system'; body: string; at_ms: number };
 
@@ -110,7 +110,8 @@ export class CallSession {
   private listText = ''; // that turn's words (the list, not the confirmation)
   private apptCount = 0;
   private cancelRefused = 0;
-  private apptIds = new Map<string, string>(); // the caller's appointments this call found: id -> its time
+  private apptIds = new Map<string, string>(); // the caller's appointments this call found: short name (appt-1) -> its time
+  private apptAlias = new Map<string, string>(); // short name -> barber-core's id (Gemini cannot copy a long id: it made them up)
   private badIdTold = 0;
   private askedAt = 0; // when the AI last asked something (a ? in its words)
   private callerAt = 0; // when the caller last said something
@@ -626,8 +627,14 @@ export class CallSession {
     // an appointment id the AI made up (not one find_my_appointments gave): it is told the real ones, never sent
     const badId = new Map<string, unknown>();
     for (const c of calls) {
-      const id = (c.args as any)?.appointment_id;
-      if ((c.name === 'cancel_appointment' || c.name === 'reschedule_appointment') && this.apptIds.size && !this.apptIds.has(id) && this.badIdTold < 2) {
+      if (c.name !== 'cancel_appointment' && c.name !== 'reschedule_appointment') continue;
+      const args = (c.args ?? {}) as any;
+      const id = args.appointment_id;
+      // the short name back to the real id; with only one appointment found, any other id means that one
+      if (this.apptAlias.has(id)) args.appointment_id = this.apptAlias.get(id);
+      else if (this.apptAlias.size === 1) { args.appointment_id = [...this.apptAlias.values()][0]; this.log('appointment_id_guessed', {}); }
+      c.args = args;
+      if (this.apptAlias.size && ![...this.apptAlias.values()].includes(args.appointment_id) && this.badIdTold < 2) {
         this.badIdTold += 1;
         this.log('appointment_id_unknown', {});
         badId.set(c.id, { ok: false, reason: 'unknown_appointment_id',
@@ -715,7 +722,14 @@ export class CallSession {
       if (c.name === 'find_my_appointments' && result?.ok === true && Array.isArray(result.appointments)) {
         this.apptCount = result.appointments.length;
         this.listingPending = true;
-        for (const a of result.appointments) if (typeof a?.appointment_id === 'string') this.apptIds.set(a.appointment_id, `${a.local_date ?? ''} ${a.local_time ?? ''}`.trim());
+        // Gemini gets short names (appt-1, appt-2): it made up long ids instead of copying them
+        result = { ...result, appointments: result.appointments.map((a: any) => {
+          if (typeof a?.appointment_id !== 'string') return a;
+          let alias = [...this.apptAlias].find(([, real]) => real === a.appointment_id)?.[0];
+          if (!alias) { alias = `appt-${this.apptAlias.size + 1}`; this.apptAlias.set(alias, a.appointment_id); }
+          this.apptIds.set(alias, `${a.local_date ?? ''} ${a.local_time ?? ''}`.trim());
+          return { ...a, appointment_id: alias };
+        }) };
       }
       if (result?.ok === true && ['book_appointment', 'take_message', 'transfer_to_human', 'cancel_appointment', 'reschedule_appointment'].includes(c.name)) this.outcome = true;
       // the call's language is fixed: Gemini listens for it and answers only in it from now on
