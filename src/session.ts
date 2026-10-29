@@ -74,7 +74,7 @@ const SILENCE_NUDGE = (lang: string) => `The caller has not answered at all. Tha
 // What the phone server did that also goes into the call's text (barber-core keeps it for the superadmins)
 const NOTE_EVENTS = new Set(['reask', 'silence_nudge', 'time_nudge', 'false_claim_corrected', 'unchecked_times_corrected',
   'end_call_refused', 'language_locked', 'gemini_retry', 'gemini_go_away', 'core_tools_failed', 'tool_unknown',
-  'tool_before_opening', 'opening_again', 'twilio_update_failed', 'call_ended', 'gemini_setup']);
+  'tool_before_opening', 'opening_again', 'twilio_update_failed', 'call_ended', 'gemini_setup', 'repeat_muted']);
 const TRANSCRIPT_MAX_CHARS = 200_000; // a long call's text stays a small report
 type TranscriptLine = { speaker: 'ai' | 'caller' | 'tool' | 'system'; body: string; at_ms: number };
 
@@ -98,6 +98,7 @@ export class CallSession {
   private turnText = ''; // what the AI said in this turn (output transcription)
   private turnTool = false; // the AI asked for a tool in this turn
   private lockedLanguage: string | null = null; // the caller's language, once set_caller_language fixed it
+  private muteRestOfTurn = false; // the AI asked its question, then set the language: the rest of this turn is its repeat
   private lastTurns: string[] = []; // the AI's last finished turns, as text
   private slotWords = new Map<string, string[]>(); // a free time (start_iso) as check_availability said it
   private readBackRefused = 0;
@@ -499,10 +500,10 @@ export class CallSession {
       if (!this.openingHeard) void this.startOpening();
     }
     const said = m.serverContent?.outputTranscription?.text;
-    if (typeof said === 'string' && said) { this.checkClaim(said); this.words('ai', said); if (/[?؟]/.test(said)) this.askedAt = this.deps.now().getTime(); }
+    if (typeof said === 'string' && said && !this.muteRestOfTurn) { this.checkClaim(said); this.words('ai', said); if (/[?؟]/.test(said)) this.askedAt = this.deps.now().getTime(); }
     if (m.serverContent?.interrupted) this.aiLine = null;
     for (const part of m.serverContent?.modelTurn?.parts ?? []) {
-      if (part?.inlineData?.data && this.muted) continue;
+      if (part?.inlineData?.data && (this.muted || this.muteRestOfTurn)) continue;
       if (part?.inlineData?.data) {
         this.lastAiAudioAt = this.deps.now().getTime();
         this.aiWaitingSince = 0;
@@ -547,6 +548,7 @@ export class CallSession {
       if (this.turnText.trim()) { this.lastTurns.push(this.turnText); if (this.lastTurns.length > 6) this.lastTurns.shift(); }
       this.turnText = '';
       this.turnTool = false;
+      this.muteRestOfTurn = false;
       this.turnAudio = false;
       this.nudgePending = false;
       if (!this.hangUpWhenSaid) {
@@ -658,7 +660,15 @@ export class CallSession {
       if (c.name === 'check_availability' && result?.ok === true && Array.isArray(result.slots)) this.rememberSlots(result.slots);
       if (result?.ok === true && ['book_appointment', 'take_message', 'transfer_to_human', 'cancel_appointment', 'reschedule_appointment'].includes(c.name)) this.outcome = true;
       // the call's language is fixed: Gemini listens for it and answers only in it from now on
-      if (c.name === 'set_caller_language' && result?.ok === true && typeof result.language === 'string') result = { ...result, next: this.languageNote(result.language) };
+      if (c.name === 'set_caller_language' && result?.ok === true && typeof result.language === 'string') {
+        result = { ...result, next: this.languageNote(result.language) };
+        // the AI already asked its question in this turn and set the language after it: what it says next in
+        // this turn is that question again («…کدوم رو می‌خواید؟…کدوم رو می‌خواید؟»), so the caller does not hear it
+        if (this.turnAudio && /[?؟]/.test(this.turnText) && calls.every((x) => x.name === 'set_caller_language')) {
+          this.muteRestOfTurn = true;
+          this.log('repeat_muted', {});
+        }
+      }
       // a message is passed on: only now the caller hears so, then one goodbye (never a goodbye first)
       if (c.name === 'take_message' && result?.ok === true && !calls.some((x) => x.name === 'end_call')) result = { ...result, next: MESSAGE_DONE };
       responses.push({ id: c.id, name: c.name, response: result });

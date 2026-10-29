@@ -542,6 +542,28 @@ describe('a call', () => {
     assert.equal(h.sentToTwilio.filter((m) => m.event === 'media').length, media.length, 'not played again');
   });
 
+  it('the AI asked its question, then set the language: the rest of that turn (its repeat) is not played; the next turn is', async () => {
+    const h = harness(OPEN, (list) => list.map((t) => ({ toolCallId: t.id, name: t.name, result: '{"ok":true,"language":"fa-IR"}' })));
+    await h.s.start('MZ1', ids);
+    h.gem().onOpen();
+    await h.gem().onMessage(JSON.stringify({ setupComplete: {} }));
+    await heard(h);
+    const media = () => h.sentToTwilio.filter((m) => m.event === 'media').length;
+    const audio = JSON.stringify({ serverContent: { modelTurn: { parts: [{ inlineData: { mimeType: 'audio/pcm;rate=24000', data: Buffer.alloc(480).toString('base64') } }] } } });
+    await h.gem().onMessage(audio);
+    await h.gem().onMessage(JSON.stringify({ serverContent: { outputTranscription: { text: 'ما دو تا آرایشگر داریم، عرفان و علیرضا. کدوم رو می‌خواید؟' } } }));
+    await h.gem().onMessage(JSON.stringify({ toolCall: { functionCalls: [{ id: 'l1', name: 'set_caller_language', args: { language: 'fa-IR' } }] } }));
+    await new Promise((r) => setImmediate(r));
+    const before = media();
+    await h.gem().onMessage(audio); // the same question again
+    await h.gem().onMessage(JSON.stringify({ serverContent: { outputTranscription: { text: 'ما دو تا آرایشگر داریم، عرفان و علیرضا. کدوم رو می‌خواید؟' } } }));
+    assert.equal(media(), before, 'the repeat is not played');
+    assert.ok(h.logs.some(([e]) => e === 'repeat_muted'));
+    await h.gem().onMessage(JSON.stringify({ serverContent: { turnComplete: true } }));
+    await h.gem().onMessage(audio); // the next turn (an answer to the caller) is heard
+    assert.equal(media(), before + 1);
+  });
+
   it('Gemini closes mid-call: its code and reason go into the call\'s text (the report says why it ended)', async () => {
     const h = harness(OPEN);
     await h.s.start('MZ1', ids);
