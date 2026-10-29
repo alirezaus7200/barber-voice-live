@@ -16,6 +16,8 @@ export type SessionDeps = {
   updateCall(callSid: string, twiml: string): Promise<{ ok: boolean; error?: string }>;
   prompt: string;
   model: string;
+  /** Gemini's start-of-speech settings (from Cloud Run's settings); unset = Gemini's own. */
+  activity?: { startOfSpeechSensitivity?: string; prefixPaddingMs?: number };
   voice: string;
   setTimer(ms: number, fn: () => void): unknown;
   clearTimer(t: unknown): void;
@@ -54,7 +56,7 @@ const SILENCE_NUDGE = 'The caller has not answered at all. Thank them for callin
 // What the phone server did that also goes into the call's text (barber-core keeps it for the superadmins)
 const NOTE_EVENTS = new Set(['reask', 'silence_nudge', 'time_nudge', 'false_claim_corrected', 'unchecked_times_corrected',
   'end_call_refused', 'language_locked', 'gemini_retry', 'gemini_go_away', 'core_tools_failed', 'tool_unknown',
-  'tool_before_opening', 'opening_again', 'twilio_update_failed', 'call_ended']);
+  'tool_before_opening', 'opening_again', 'twilio_update_failed', 'call_ended', 'gemini_setup']);
 const TRANSCRIPT_MAX_CHARS = 200_000; // a long call's text stays a small report
 type TranscriptLine = { speaker: 'ai' | 'caller' | 'tool' | 'system'; body: string; at_ms: number };
 
@@ -158,6 +160,8 @@ export class CallSession {
 
   /** One Gemini Live session for this call. If Gemini refuses it at once (1007), it is opened once more. */
   private connectGemini(plain = false) {
+    // which hearing settings this call used: in its text, so a test result says which one passed
+    this.log('gemini_setup', { model: this.deps.model, plain, ...this.deps.activity });
     this.gemini = this.deps.openGemini({
       onOpen: () => this.gemini?.send(JSON.stringify({
         setup: {
@@ -166,7 +170,7 @@ export class CallSession {
           // a short pause before the AI answers; default sensitivity so a quiet caller is heard
           // the plain setting is the retry after Gemini refused the full one (1007)
           // the AI's words as text (outputAudioTranscription): to catch a "booked" or times no tool gave
-          ...(plain ? {} : { realtimeInputConfig: { automaticActivityDetection: { silenceDurationMs: 600 } }, contextWindowCompression: { slidingWindow: {} }, inputAudioTranscription: {}, outputAudioTranscription: {} }),
+          ...(plain ? {} : { realtimeInputConfig: { automaticActivityDetection: { silenceDurationMs: 600, ...this.deps.activity } }, contextWindowCompression: { slidingWindow: {} }, inputAudioTranscription: {}, outputAudioTranscription: {} }),
           systemInstruction: { parts: [{ text: fillPrompt(this.deps.prompt, this.variables) + this.openingNote() }] },
           tools: geminiTools(),
         },

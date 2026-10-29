@@ -4,6 +4,8 @@ export type Config = {
   twilioAccountSid: string; twilioAuthToken: string;
   coreWebhookUrl: string; coreWebhookSecret: string; streamSecret: string;
   geminiApiKey: string; geminiModel: string; geminiVoice: string;
+  // how readily Gemini hears the start of the caller's speech (Cloud Run settings, no code change): unset = Gemini's own
+  geminiStartSensitivity?: 'START_SENSITIVITY_HIGH' | 'START_SENSITIVITY_LOW'; geminiPrefixPaddingMs?: number;
 };
 
 export function loadConfig(env: Record<string, string | undefined>): Config {
@@ -24,5 +26,17 @@ export function loadConfig(env: Record<string, string | undefined>): Config {
     twilioAccountSid: need('TWILIO_ACCOUNT_SID'), twilioAuthToken: need('TWILIO_AUTH_TOKEN'),
     coreWebhookUrl, coreWebhookSecret, streamSecret,
     geminiApiKey: need('GEMINI_API_KEY'), geminiModel: need('GEMINI_LIVE_MODEL'), geminiVoice: env.GEMINI_VOICE?.trim() || 'Kore',
+    ...activitySettings(env),
+  };
+}
+
+/** GEMINI_START_SENSITIVITY (HIGH or LOW) and GEMINI_PREFIX_PADDING_MS (0 to 1000): unset or wrong = Gemini's own. */
+export function activitySettings(env: Record<string, string | undefined>): Pick<Config, 'geminiStartSensitivity' | 'geminiPrefixPaddingMs'> {
+  const s = env.GEMINI_START_SENSITIVITY?.trim().toUpperCase();
+  const p = env.GEMINI_PREFIX_PADDING_MS?.trim();
+  const ms = p && /^\d{1,4}$/.test(p) && Number(p) <= 1000 ? Number(p) : undefined;
+  return {
+    ...(s === 'HIGH' || s === 'LOW' ? { geminiStartSensitivity: `START_SENSITIVITY_${s}` as const } : {}),
+    ...(ms !== undefined ? { geminiPrefixPaddingMs: ms } : {}),
   };
 }

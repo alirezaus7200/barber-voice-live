@@ -54,6 +54,17 @@ describe('twilio', () => {
   });
 });
 
+describe('hearing settings', () => {
+  it('GEMINI_START_SENSITIVITY and GEMINI_PREFIX_PADDING_MS from the host\'s settings; unset or wrong = Gemini\'s own', async () => {
+    const { activitySettings } = await import('../src/config.ts');
+    assert.deepEqual(activitySettings({}), {});
+    assert.deepEqual(activitySettings({ GEMINI_START_SENSITIVITY: 'high', GEMINI_PREFIX_PADDING_MS: '20' }), { geminiStartSensitivity: 'START_SENSITIVITY_HIGH', geminiPrefixPaddingMs: 20 });
+    assert.deepEqual(activitySettings({ GEMINI_START_SENSITIVITY: 'LOW' }), { geminiStartSensitivity: 'START_SENSITIVITY_LOW' });
+    assert.deepEqual(activitySettings({ GEMINI_START_SENSITIVITY: 'max', GEMINI_PREFIX_PADDING_MS: '5000' }), {});
+    assert.deepEqual(activitySettings({ GEMINI_PREFIX_PADDING_MS: '-1' }), {});
+  });
+});
+
 describe('barber-core', () => {
   it('signs every message like barber-core expects (HMAC-SHA256 of "<ts>.<body>", hex)', async () => {
     let seen: any;
@@ -112,7 +123,7 @@ describe('the booking steps in the prompt', () => {
     assert.ok(!/\bbarbers?\b/i.test(prompt.replace(/\{\{[a-z_]+\}\}|\b[a-z]+_barbers?\b|\bbarber_[a-z]+\b|barbería/g, '')), 'no "barber" left in the instructions');
     assert.ok(prompt.includes('asks for anything sexual or\n  inappropriate'));
     assert.ok(prompt.includes('Never give medical advice.'));
-    assert.ok(prompt.includes('«یه لحظه، نگاه می‌کنم.»'), 'the waiting phrase in the caller\'s language');
+    assert.ok(prompt.includes('«یه لحظه.»'), 'the waiting phrase in the caller\'s language');
     assert.ok(prompt.includes('Pass `language`'));
     // WhatsApp only when the salon sends it, asked once, any "no" or "I don't have it" is a no; a new caller's name first
     assert.ok(prompt.includes('WhatsApp reminders: {{whatsapp_rule}}'));
@@ -154,7 +165,8 @@ describe('the booking steps in the prompt', () => {
   it('short questions; the waiting phrase only right before a tool; a named day («فردا») is checked at once, never asked again', async () => {
     const { readFileSync } = await import('node:fs');
     const prompt = readFileSync(new URL('../src/prompt.txt', import.meta.url), 'utf8');
-    assert.ok(prompt.includes('Say it only right before a tool\n  call, never before a question, and always in the caller\'s language'));
+    assert.ok(prompt.includes('Only before check_availability, book_appointment,\n  cancel_appointment, reschedule_appointment or find_my_appointments (they take a moment)'));
+    assert.ok(prompt.includes('Never say it before any other tool, never before a question, never twice in a row'));
     assert.ok(prompt.includes('never\ncall previous_visit_reminder yourself'), 'the phone system looks up the last visit');
     assert.ok(prompt.includes('when one service fits, take it and go on, without asking "do you\n   mean …?"'));
     assert.ok(!/say "One moment\." and/.test(prompt), '"One moment" only in the caller\'s language');
@@ -199,7 +211,7 @@ describe('the booking steps in the prompt', () => {
   it('no silence while a tool runs, the nearest free time at once, no talk about the rules', async () => {
     const { readFileSync } = await import('node:fs');
     const prompt = readFileSync(new URL('../src/prompt.txt', import.meta.url), 'utf8');
-    assert.ok(prompt.includes('Never stay silent while a tool runs.'));
+    assert.ok(prompt.includes('Answer at once: callers hang up on silence.'));
     assert.ok(prompt.includes('call set_caller_language once'), 'the language is fixed as soon as it is known');
     assert.ok(prompt.includes('Never ask "morning, afternoon or evening?"'), 'the first free times are offered at once');
     assert.ok(prompt.includes('a no to WhatsApp is never a no to the booking'));
