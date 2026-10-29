@@ -69,6 +69,16 @@ describe('barber-core', () => {
     assert.deepEqual(m.phoneNumber, { number: '+14013295007' }); // the dialed number decides the salon, there
     assert.equal(m.toolCallList[0].function.arguments, '{"date":"2026-10-23"}');
   });
+  it('the end-of-call report carries this server\'s revision (Cloud Run\'s K_REVISION) when there is one', async () => {
+    const bodies: any[] = [];
+    const fetch = async (_url: string, init: any) => { bodies.push(JSON.parse(init.body).message); return { ok: true, status: 200, json: async () => ({}) }; };
+    const ids = { callId: 'CA1', to: '+14013295007', from: '+12013702511' };
+    const end = { startedAt: '2026-10-29T10:00:00Z', endedAt: '2026-10-29T10:02:00Z', endedReason: 'customer-ended-call' };
+    await coreClient({ url: 'https://core.example/x', secret: 'k'.repeat(40), fetch: fetch as any, revision: 'barber-voice-live-00104-abc' }).end(ids, end);
+    await coreClient({ url: 'https://core.example/x', secret: 'k'.repeat(40), fetch: fetch as any }).end(ids, end);
+    assert.equal(bodies[0].voiceRevision, 'barber-voice-live-00104-abc');
+    assert.equal('voiceRevision' in bodies[1], false);
+  });
   it('fills the prompt facts; unknown ones become empty', () => {
     assert.equal(fillPrompt('Hi {{shop_name}} {{nope}}!', { shop_name: 'Test Salon' }), 'Hi Test Salon !');
   });

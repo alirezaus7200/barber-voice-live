@@ -12,7 +12,8 @@ import { openingSpeaker } from './tts.ts';
 
 const cfg = loadConfig(process.env);
 const prompt = readFileSync(new URL('./prompt.txt', import.meta.url), 'utf8');
-const core = coreClient({ url: cfg.coreWebhookUrl, secret: cfg.coreWebhookSecret });
+// K_REVISION: set by Cloud Run itself (the revision's name), never a secret
+const core = coreClient({ url: cfg.coreWebhookUrl, secret: cfg.coreWebhookSecret, revision: process.env.K_REVISION?.trim() || undefined });
 const log = (event: string, data: Record<string, unknown>) => console.error(JSON.stringify({ event, ...data }));
 // the opening as ready-made audio in the call's voice (word for word; kept in memory)
 const speak = openingSpeaker({ apiKey: cfg.geminiApiKey, voice: cfg.geminiVoice, model: process.env.GEMINI_TTS_MODEL?.trim() || undefined, log });
