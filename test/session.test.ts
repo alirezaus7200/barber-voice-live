@@ -447,6 +447,42 @@ describe('a call', () => {
     assert.deepEqual(sentToCore.filter((n) => n !== 'previous_visit_reminder'), ['check_availability', 'book_appointment']);
   });
 
+  it('a move to a time check_availability never gave is held once; the next free day\'s times count as offered and need a read-back', async () => {
+    const next = [{ start_iso: '2026-10-30T13:00:00.000Z', local_time: '09:00', spoken: 'ساعت نه صبح' },
+      { start_iso: '2026-10-30T22:00:00.000Z', local_time: '18:00', spoken: 'ساعت شش عصر' }];
+    const sent: string[] = [];
+    const h = harness(OPEN, (list) => list.map((t) => {
+      sent.push(t.name);
+      const result = t.name === 'check_availability' ? { ok: true, slots: [], next_day_with_openings: { date: '2026-10-30', slots: next } }
+        : t.name === 'find_my_appointments' ? { ok: true, appointments: [{ appointment_id: 'a1', local_time: '18:30' }] } : { ok: true };
+      return { toolCallId: t.id, name: t.name, result: JSON.stringify(result) };
+    }));
+    await h.s.start('MZ1', ids);
+    h.gem().onOpen();
+    await h.gem().onMessage(JSON.stringify({ setupComplete: {} }));
+    await heard(h);
+    const tool = async (id: string, name: string, args: unknown = {}) => {
+      await h.gem().onMessage(JSON.stringify({ toolCall: { functionCalls: [{ id, name, args }] } }));
+      await new Promise((r) => setImmediate(r));
+      return h.sentToGemini.at(-1).toolResponse.functionResponses[0].response;
+    };
+    const turn = async (text: string) => {
+      await h.gem().onMessage(JSON.stringify({ serverContent: { outputTranscription: { text } } }));
+      await h.gem().onMessage(JSON.stringify({ serverContent: { turnComplete: true } }));
+    };
+    await tool('f1', 'find_my_appointments');
+    await tool('c1', 'check_availability');
+    await turn('جمعه ساعت نه صبح یا ساعت شش عصر وقت داره. کدوم؟');
+    const own = await tool('r1', 'reschedule_appointment', { appointment_id: 'appt-1', new_start_iso: '2026-10-30T22:30:00Z' });
+    assert.equal(own.reason, 'time_not_offered', '6:30 was never offered (it is the appointment\'s own time)');
+    assert.ok(h.logs.some(([e]) => e === 'time_not_offered'));
+    assert.equal((await tool('r2', 'reschedule_appointment', { appointment_id: 'appt-1', new_start_iso: '2026-10-30T22:00:00Z' })).reason, 'read_back_first',
+      'a next-day time is remembered: the offer is not its read-back, however the time is written');
+    await turn('نوبتتون رو به جمعه سی‌ام اکتبر ساعت شش عصر با عرفان می‌برم. درسته؟');
+    assert.equal((await tool('r3', 'reschedule_appointment', { appointment_id: 'appt-1', new_start_iso: '2026-10-30T22:00:00.000Z' })).ok, true);
+    assert.deepEqual(sent.filter((n) => n !== 'previous_visit_reminder'), ['find_my_appointments', 'check_availability', 'reschedule_appointment']);
+  });
+
   it('cancel_appointment only after a question about that one appointment: the list of the caller\'s appointments is not it (once)', async () => {
     const appts = [{ appointment_id: 'a1', local_time: '09:00' }, { appointment_id: 'a2', local_time: '14:30' }];
     const sent: string[] = [];
