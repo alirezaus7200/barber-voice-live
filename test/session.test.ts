@@ -279,31 +279,22 @@ describe('a call', () => {
     }
   });
 
-  it('a short answer Gemini wrote down but did not answer («بله») is passed on to it once, instead of the question being asked again', async () => {
+  it('the caller\'s words written down late (after the AI already answered) never make the AI answer again', async () => {
     const clock = { t: Date.parse('2026-10-22T15:00:00Z') };
     const h = harness(OPEN, () => [], clock);
     await h.s.start('MZ1', ids);
     h.gem().onOpen();
     await h.gem().onMessage(JSON.stringify({ setupComplete: {} }));
     await heard(h);
-    await talked(h); // the read-back: "…, is that right?"
+    await talked(h); // "Which day?"
     h.s.played();
+    const before = h.sentToGemini.filter((m) => m.clientContent).length;
+    await speak(h); // the AI already answered "tomorrow" ...
+    await h.gem().onMessage(JSON.stringify({ serverContent: { turnComplete: true } }));
+    await h.gem().onMessage(JSON.stringify({ serverContent: { inputTranscription: { text: ' فردا' } } })); // ... and the words come after
     const silent = Buffer.alloc(160, 0xff).toString('base64');
-    const told = () => h.sentToGemini.filter((m) => m.clientContent).map((m) => m.clientContent.turns[0].parts[0].text).filter((t) => t.startsWith('The caller just said'));
-    await h.gem().onMessage(JSON.stringify({ serverContent: { inputTranscription: { text: ' بله' } } }));
-    clock.t += 3500; h.s.fromCaller(silent);
-    assert.equal(told().length, 0, 'Gemini may still be answering (it was, at 3 s)');
-    clock.t += 2000; h.s.fromCaller(silent);
-    assert.equal(told().length, 1);
-    assert.match(told()[0], /^The caller just said: "بله"\. Answer that now.*do not ask your last question again.*call book_appointment now/);
-    assert.ok(h.logs.some(([e]) => e === 'heard_unanswered'));
-    clock.t += 5500; h.s.fromCaller(silent);
-    assert.equal(told().length, 1, 'once');
-    // answered in time: nothing is added
-    await h.gem().onMessage(JSON.stringify({ serverContent: { inputTranscription: { text: 'yes' } } }));
-    await speak(h);
-    clock.t += 5500; h.s.fromCaller(silent);
-    assert.equal(told().length, 1, 'the AI answered');
+    for (let i = 0; i < 4; i++) { clock.t += 1500; h.s.fromCaller(silent); }
+    assert.equal(h.sentToGemini.filter((m) => m.clientContent).length, before, 'nothing is sent: the AI would ask its question again');
   });
 
   it('the AI asked and the caller says nothing for 5 s: it asks again; still nothing: the barber or a message', async () => {
