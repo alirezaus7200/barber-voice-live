@@ -262,6 +262,23 @@ describe('a call', () => {
     assert.ok(!h.logs.some(([e]) => e === 'silence_nudge'));
   });
 
+  it('the last visit is looked up by this server right after the opening (the AI is not given the tool); its sentence goes to the AI only when remind is true', async () => {
+    for (const [answer, told] of [['{"ok":true,"remind":true,"spoken":"آخرین مراجعهٔ شما ۲۱ روز پیش بود."}', true], ['{"ok":true,"remind":false}', false]] as const) {
+      const asked: any[] = [];
+      const h = harness(OPEN, (list) => { asked.push(...list); return list.map((t) => ({ toolCallId: t.id, name: t.name, result: answer })); });
+      await h.s.start('MZ1', ids);
+      h.gem().onOpen();
+      assert.ok(!h.sentToGemini[0].setup.tools[0].functionDeclarations.some((d: any) => d.name === 'previous_visit_reminder'), 'not a tool of the AI');
+      await h.gem().onMessage(JSON.stringify({ setupComplete: {} }));
+      await heard(h);
+      await new Promise((r) => setImmediate(r));
+      assert.deepEqual(asked.map((t) => t.name), ['previous_visit_reminder']);
+      const notes = h.sentToGemini.filter((m) => m.clientContent?.turns?.[0]?.parts?.[0]?.text?.startsWith('Note from the phone system'));
+      assert.equal(notes.length, told ? 1 : 0);
+      if (told) assert.match(notes[0].clientContent.turns[0].parts[0].text, /exactly.*"آخرین مراجعهٔ شما ۲۱ روز پیش بود\."/);
+    }
+  });
+
   it('a short answer Gemini wrote down but did not answer («بله») is passed on to it once, instead of the question being asked again', async () => {
     const clock = { t: Date.parse('2026-10-22T15:00:00Z') };
     const h = harness(OPEN, () => [], clock);
@@ -316,7 +333,8 @@ describe('a call', () => {
     await h.gem().onMessage(JSON.stringify({ serverContent: { turnComplete: true } }));
     clock.t += 8000; h.s.fromCaller(silent);
     assert.equal(said().length, 3, 'at most 2 re-asks; then the 30 s silence rule ends the call');
-    assert.deepEqual(h.logs.filter(([e]) => e === 'reask'), [['reask', { n: 1 }], ['reask', { n: 2 }]]);
+    assert.deepEqual(h.logs.filter(([e]) => e === 'reask').map(([, d]) => d.n), [1, 2]);
+    assert.ok(h.logs.filter(([e]) => e === 'reask').every(([, d]) => typeof d.loudMsAgo === 'number'), 'how long since the line was loud');
     // the caller answers and the AI answers them: the count starts again
     h.s.fromCaller(loud);
     await speak(h);

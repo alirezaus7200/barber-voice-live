@@ -217,7 +217,8 @@ export class CallSession {
         // still counting: if Gemini says nothing to this either, the next step still comes (never a silent line)
         this.aiWaitingSince = now;
         this.nudgePending = true;
-        this.deps.log('reask', { n: this.reasks });
+        // loudMsAgo: how long ago the line was last loud (the caller may have answered and Gemini missed it)
+        this.deps.log('reask', { n: this.reasks, loudMsAgo: this.lastLoudAt ? Math.min(now - this.lastLoudAt, 99999) : -1 });
         this.gemini.send(JSON.stringify({ clientContent: { turns: [{ role: 'user', parts: [{ text: this.reasks === 1 ? REASK : REASK_OFFER }] }], turnComplete: true } }));
       } else if (this.aiWaitingSince && this.reasks >= this.maxReasks() && !this.nudged
                  && now - this.aiWaitingSince > (this.talked ? SILENCE_NUDGE_MS : FIRST_SILENCE_NUDGE_MS)) {
@@ -296,6 +297,20 @@ export class CallSession {
     this.deps.log('start_timing', { step: name, ms: this.deps.now().getTime() - this.t0, retried: this.retried });
   }
 
+  /** The caller's last visit, looked up here right after the opening (the AI said "one moment" before the tool). */
+  private async previousVisit() {
+    let res: any = null;
+    try {
+      const r = await this.deps.core.tools(this.ids, [{ id: 'previous-visit', name: 'previous_visit_reminder', args: {} }]);
+      res = JSON.parse(r.find((x) => x.toolCallId === 'previous-visit')?.result ?? 'null');
+    } catch { /* no reminder: the call goes on */ }
+    if (!res) return;
+    this.deps.log('tool_result', { tool: 'previous_visit_reminder', ok: res.ok === true, ...(res.remind === true ? { remind: true } : {}) });
+    if (this.closed || res.ok !== true || res.remind !== true || typeof res.spoken !== 'string' || !res.spoken.trim()) return;
+    const spoken = res.spoken.replace(/["\\]/g, ' ').slice(0, 300);
+    this.gemini?.send(JSON.stringify({ clientContent: { turns: [{ role: 'user', parts: [{ text: `Note from the phone system: say this to the caller now, exactly, in one short turn: "${spoken}". If they already asked for something, answer that instead and leave this out.` }] }], turnComplete: true } }));
+  }
+
   /** The AI said something was booked (cancelled, moved) but no tool answered ok: it must correct itself now. */
   private checkClaim(text: string) {
     this.turnText = (this.turnText + text).slice(-600);
@@ -328,6 +343,7 @@ export class CallSession {
       this.openingHeard = true;
       this.step('opening_heard');
       this.aiWaitingSince = this.deps.now().getTime();
+      void this.previousVisit();
       return;
     }
     if (this.aiWaitingSince) this.aiWaitingSince = this.deps.now().getTime();
