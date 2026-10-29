@@ -51,7 +51,11 @@ export const CORE_TOOLS = [
       required: ['staff_id', 'service_ids', 'start_iso', 'customer_name', 'language'],
     },
   },
-  { name: 'find_my_appointments', description: "The caller's own upcoming appointments (matched by the number they are calling from).", parameters: null },
+  {
+    name: 'find_my_appointments',
+    description: "The caller's own upcoming appointments (matched by the number they are calling from), each with `spoken` in the call's language: say that, word for word.",
+    parameters: { type: 'object', properties: { language } },
+  },
   {
     name: 'cancel_appointment',
     description: "Cancels one of the caller's own appointments after they confirmed which one.",

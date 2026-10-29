@@ -404,6 +404,7 @@ describe('a call', () => {
       ['tool', 'previous_visit_reminder → {"ok":true,"slots":[]}', 0], // looked up by this server after the opening
       ['caller', 'یه نوبت می‌خواستم', 3000],
       ['tool', 'check_availability {"date":"2026-10-23"}', 3000],
+      ['system', 'tool_timing {"tools":["check_availability"],"ms":0}', 3000],
       ['tool', 'check_availability → {"ok":true,"slots":[]}', 3000],
       ['ai', 'Erfan is free at 9.', 3000],
       ['system', 'reask {"n":1,"loudMsAgo":6000,"callerPeak":0,"heardChars":0}', 9000],
