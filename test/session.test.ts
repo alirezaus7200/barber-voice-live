@@ -542,6 +542,20 @@ describe('a call', () => {
     assert.equal(h.sentToTwilio.filter((m) => m.event === 'media').length, media.length, 'not played again');
   });
 
+  it('Gemini closes mid-call: its code and reason go into the call\'s text (the report says why it ended)', async () => {
+    const h = harness(OPEN);
+    await h.s.start('MZ1', ids);
+    h.gem().onOpen();
+    await h.gem().onMessage(JSON.stringify({ setupComplete: {} }));
+    await heard(h);
+    (h.gem() as any).onClose(1011, 'Internal error encountered.');
+    await new Promise((r) => setImmediate(r));
+    await h.s.finish();
+    const report = h.core.filter((c: any) => c[0] === 'end').at(-1)[1];
+    assert.equal(report.endedReason, 'gemini-closed');
+    assert.ok(report.transcript.some((l: any) => l.speaker === 'system' && l.body === 'gemini_closed {"code":1011,"reason":"Internal error encountered."}'));
+  });
+
   it('the opening audio is asked from barber-core with the voice; stored audio plays without text-to-speech; new audio is kept there', async () => {
     let made = 0;
     const stored = Buffer.alloc(8000, 0x7f).toString('base64');

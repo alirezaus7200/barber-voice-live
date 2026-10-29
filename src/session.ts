@@ -11,7 +11,7 @@ export type SocketLike = { send(data: string): void; close(): void };
 export type SessionDeps = {
   core: CoreClient;
   /** Opens the Gemini Live socket; `onMessage` gets each server message as text. */
-  openGemini(handlers: { onOpen(): void; onMessage(text: string): void; onClose(code?: number): void }): SocketLike;
+  openGemini(handlers: { onOpen(): void; onMessage(text: string): void; onClose(code?: number, reason?: string): void }): SocketLike;
   /** Replaces what the live call does (Twilio REST): a transfer, a notice, a hang-up. */
   updateCall(callSid: string, twiml: string): Promise<{ ok: boolean; error?: string }>;
   prompt: string;
@@ -208,8 +208,10 @@ export class CallSession {
         },
       })),
       onMessage: (text) => void this.fromGemini(text),
-      onClose: (code) => {
+      onClose: (code, reason) => {
         if (this.closed) return;
+        // Gemini's own close code and reason in the call's text too (1000 normal; 1007 refused; 1011 its own error)
+        this.line('system', `gemini_closed ${JSON.stringify({ code: code ?? null, reason: String(reason ?? '').slice(0, 200) })}`);
         if (code === 1007 && !this.retried) {
           this.retried = true;
           this.ready = false;
