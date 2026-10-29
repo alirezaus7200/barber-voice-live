@@ -51,6 +51,11 @@ const TURN_START_PEAK = 1500;
 const TURN_START_PEAK_OVER_AI = 4000;
 const TURN_END_QUIET_MS = 700;
 const TURN_PREROLL_FRAMES = 10; // Twilio sends 20 ms frames
+// book_appointment only after the read-back (hard rule): the AI's last turn before it must have said the chosen time,
+// as check_availability gave it, and asked if it is right; else it is told to read back first (once a call)
+const READ_BACK_FIRST = 'Not booked yet. First read it all back in one sentence (staff member, services, weekday, date, time and the name) and ask "Is that right?"; call book_appointment again only after a clear yes.';
+// end_call while the caller has not answered the AI's last question ("Anything else? Goodbye."): wait (twice a call at most)
+const WAIT_FOR_ANSWER = 'You asked the caller a question and they have not answered yet. Say nothing more now; wait for their answer.';
 const SILENCE_NUDGE_MS = 15000; // after both re-asks the caller still says nothing this long: the AI thanks them and ends the call
 const REASK_MS = 5000; // the AI asked and the caller says nothing this long: the AI asks again (callers do not wait in silence)
 const REASK = 'The caller has not answered for about 5 seconds. Say out loud now only your last question again, short, in the caller\'s language (after the opening: just "How can I help you?"). Add nothing else: never say they have not answered.';
@@ -88,6 +93,12 @@ export class CallSession {
   private talked = false; // the AI has answered the caller once (a conversation started)
   private turnText = ''; // what the AI said in this turn (output transcription)
   private turnTool = false; // the AI asked for a tool in this turn
+  private lastTurns: string[] = []; // the AI's last finished turns, as text
+  private slotWords = new Map<string, string[]>(); // a free time (start_iso) as check_availability said it
+  private readBackRefused = 0;
+  private askedAt = 0; // when the AI last asked something (a ? in its words)
+  private callerAt = 0; // when the caller last said something
+  private endRefusedForQuestion = 0;
   private falseClaims = 0; // "booked" with no tool ok: corrected (at most twice a call)
   private timesChecked = false; // check_availability (or find_my_appointments) answered ok in this call
   private uncheckedTimes = 0; // times offered before any check: corrected (at most twice a call)
@@ -284,6 +295,7 @@ export class CallSession {
     if (!this.turnQuietSince) { this.turnQuietSince = now; return; }
     if (now - this.turnQuietSince < TURN_END_QUIET_MS) return;
     this.gemini?.send(JSON.stringify({ realtimeInput: { activityEnd: {} } }));
+    this.callerAt = now;
     this.inTurn = false;
     this.turnQuietSince = 0;
     this.turnsSent += 1;
@@ -343,7 +355,7 @@ export class CallSession {
   private languageNote(code: string): string {
     const name = LANGUAGE_NAMES[code.split('-')[0]] ?? code;
     this.log('language_locked', { language: code });
-    return `The caller speaks ${name}. From now on listen for ${name} and answer only in ${name}, unless the caller clearly switches to another language.`;
+    return `The caller speaks ${name}. From now on listen for ${name} and answer only in ${name}, unless the caller clearly switches to another language. Never say again what you already said: if you asked a question, wait for the answer.`;
   }
 
   /** Start-up timing: how long after Twilio's start each step came (the caller hears nothing until first_audio). */
@@ -395,6 +407,25 @@ export class CallSession {
     this.gemini?.send(JSON.stringify({ clientContent: { turns: [{ role: 'user', parts: [{ text: `Note from the phone system: say this to the caller now, exactly, in one short turn: "${spoken}". If they already asked for something, answer that instead and leave this out.` }] }], turnComplete: true } }));
   }
 
+  /** How each offered time was said (the tool's words, and the usual shorter forms), to find it in the read-back. */
+  private rememberSlots(slots: any[]) {
+    for (const s of slots) {
+      if (typeof s?.start_iso !== 'string') continue;
+      const said = [s.spoken, s.spoken_en, s.spoken_es, s.local_time].filter((w): w is string => typeof w === 'string' && w.trim() !== '');
+      const short = said.flatMap((w) => [w.replace(/^ساعت\s*/, ''), w.replace(/^las\s*/, ''), w.replace(':00 ', ' ')]);
+      this.slotWords.set(s.start_iso, [...new Set([...said, ...short].map((w) => w.trim()).filter((w) => w.length > 1))]);
+    }
+  }
+
+  /** The AI's last finished turn read the booking back: it said the chosen time and asked if it is right. */
+  private readBackDone(start: unknown): boolean {
+    if (typeof start !== 'string') return true;
+    const words = this.slotWords.get(start);
+    if (!words?.length) return true; // a time this call did not offer (nothing to compare): the database still checks it
+    const last = this.lastTurns.at(-1) ?? '';
+    return /[?؟]/.test(last) && words.some((w) => last.includes(w));
+  }
+
   /** The AI said something was booked (cancelled, moved) but no tool answered ok: it must correct itself now. */
   private checkClaim(text: string) {
     this.turnText = (this.turnText + text).slice(-600);
@@ -442,7 +473,7 @@ export class CallSession {
     // re-ask now (a re-ask over a quiet "yes" made the AI ask again, or offer a message instead of booking)
     const heardText = m.serverContent?.inputTranscription?.text;
     if (typeof heardText === 'string') this.heardChars += heardText.trim().length;
-    if (typeof heardText === 'string' && heardText.trim()) this.words('caller', heardText);
+    if (typeof heardText === 'string' && heardText.trim()) { this.words('caller', heardText); this.callerAt = this.deps.now().getTime(); }
     if (typeof heardText === 'string' && heardText.trim()) {
       this.aiWaitingSince = 0;
       this.lastLoudAt = this.deps.now().getTime();
@@ -453,7 +484,7 @@ export class CallSession {
       if (!this.openingHeard) void this.startOpening();
     }
     const said = m.serverContent?.outputTranscription?.text;
-    if (typeof said === 'string' && said) { this.checkClaim(said); this.words('ai', said); }
+    if (typeof said === 'string' && said) { this.checkClaim(said); this.words('ai', said); if (/[?؟]/.test(said)) this.askedAt = this.deps.now().getTime(); }
     if (m.serverContent?.interrupted) this.aiLine = null;
     for (const part of m.serverContent?.modelTurn?.parts ?? []) {
       if (part?.inlineData?.data && this.muted) continue;
@@ -491,6 +522,7 @@ export class CallSession {
       this.callerPeak = 0;
       this.heardChars = 0;
       this.checkTimes();
+      if (this.turnText.trim()) { this.lastTurns.push(this.turnText); if (this.lastTurns.length > 6) this.lastTurns.shift(); }
       this.turnText = '';
       this.turnTool = false;
       this.turnAudio = false;
@@ -536,7 +568,15 @@ export class CallSession {
       this.gemini?.send(JSON.stringify({ toolResponse: { functionResponses: calls.map((c) => ({ id: c.id, name: c.name, response })) } }));
       return;
     }
-    const forCore = calls.filter((c) => CORE_TOOL_NAMES.has(c.name));
+    // a booking with no read-back before it is not sent: the AI reads back first (once a call)
+    const held = new Set<string>();
+    for (const c of calls) {
+      if (c.name !== 'book_appointment' || this.readBackRefused >= 1 || this.readBackDone((c.args as any)?.start_iso)) continue;
+      held.add(c.id);
+      this.readBackRefused += 1;
+      this.log('read_back_missing', {});
+    }
+    const forCore = calls.filter((c) => CORE_TOOL_NAMES.has(c.name) && !held.has(c.id));
     let results: { toolCallId: string; result: string }[] = [];
     if (forCore.length) {
       try {
@@ -549,6 +589,17 @@ export class CallSession {
       }
     }
     for (const c of calls) {
+      if (held.has(c.id)) {
+        this.line('tool', `${c.name} → held: read back first`);
+        responses.push({ id: c.id, name: c.name, response: { ok: false, reason: 'read_back_first', hint: READ_BACK_FIRST } });
+        continue;
+      }
+      if (c.name === 'end_call' && !this.hangUpWhenSaid && !this.nudged && this.askedAt > this.callerAt && this.endRefusedForQuestion < 2) {
+        this.endRefusedForQuestion += 1;
+        this.log('end_call_refused', { why: 'question_unanswered' });
+        responses.push({ id: c.id, name: c.name, response: { ok: false, reason: 'caller_not_answered', hint: WAIT_FOR_ANSWER } });
+        continue;
+      }
       if (c.name === 'end_call') {
         // the call is not finished yet (nothing booked, no message, no transfer): ask the AI to continue, once
         // (never after the silence goodbye: that one ends the call on purpose)
@@ -579,6 +630,7 @@ export class CallSession {
       // the reason code only (e.g. slot_taken), never the arguments or the caller's data
       this.log('tool_result', { tool: c.name, ok: result?.ok === true, ...(result?.ok === true ? {} : { reason: String(result?.reason ?? '').slice(0, 40) }) });
       if (result?.ok === true && ['check_availability', 'find_my_appointments'].includes(c.name)) this.timesChecked = true;
+      if (c.name === 'check_availability' && result?.ok === true && Array.isArray(result.slots)) this.rememberSlots(result.slots);
       if (result?.ok === true && ['book_appointment', 'take_message', 'transfer_to_human', 'cancel_appointment', 'reschedule_appointment'].includes(c.name)) this.outcome = true;
       // the call's language is fixed: Gemini listens for it and answers only in it from now on
       if (c.name === 'set_caller_language' && result?.ok === true && typeof result.language === 'string') result = { ...result, next: this.languageNote(result.language) };
