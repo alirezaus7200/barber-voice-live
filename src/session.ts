@@ -58,14 +58,16 @@ const READ_BACK_FIRST = 'Not booked yet. First read it all back in one sentence 
 const WAIT_FOR_ANSWER = 'You asked the caller a question and they have not answered yet. Say nothing more now; wait for their answer.';
 const SILENCE_NUDGE_MS = 15000; // after both re-asks the caller still says nothing this long: the AI thanks them and ends the call
 const REASK_MS = 5000; // the AI asked and the caller says nothing this long: the AI asks again (callers do not wait in silence)
-const REASK = 'The caller has not answered for about 5 seconds. Say out loud now only your last question again, short, in the caller\'s language (after the opening: just "How can I help you?"). Add nothing else: never say they have not answered.';
+// the re-asks and the silence goodbye name the call's language: a caller who never spoke gave none, and the AI then
+// fell back to English in a Persian call
+const REASK = (lang: string) => `The caller has not answered for about 5 seconds. Say out loud now only your last question again, short, in ${lang} (after the opening: just "How can I help you?", said in ${lang}). Add nothing else: never say they have not answered.`;
 // the second re-ask: the caller may have answered too quietly to be heard, so the same question again in other
 // words; "connect or message" only when a tool already said no (a re-ask mid-booking is not a failed booking)
-const REASK_OFFER = 'The caller still has not answered. If they already said yes to your read-back, call book_appointment now instead. Otherwise ask your last question once more, in other short words, and give the choices (for the day: "Today, tomorrow, or another day?" / «امروز، فردا، یا روز دیگه؟»), nothing else. Only if a tool already said this booking cannot be done, ask instead: "Shall I connect you to the barber, or leave a message for them?" (offer to connect only if the salon is open now; otherwise only the message). If the booking is done, just "Anything else?". Then wait for the answer.';
+const REASK_OFFER = (lang: string) => `Speak ${lang}. The caller still has not answered. If they already said yes to your read-back, call book_appointment now instead. Otherwise ask your last question once more, in other short words, and give the choices (for the day: "Today, tomorrow, or another day?" / «امروز، فردا، یا روز دیگه؟»), nothing else. Only if a tool already said this booking cannot be done, ask instead: "Shall I connect you to the barber, or leave a message for them?" (offer to connect only if the salon is open now; otherwise only the message). If the booking is done, just "Anything else?". Then wait for the answer.`;
 const MESSAGE_DONE = 'The message is passed on. If you have not told the caller yet, tell them in one short answer that the barber will get their message and get back to them, and say goodbye. If you already said it, say nothing more. Then call end_call.';
 const OPENING_MAX_MS = 20000; // Twilio never confirmed the opening was played: the caller is heard anyway after this
 const SPEECH_PEAK = 700; // of 32767: a voice, even on a speakerphone (quieter than a handset); above the line's hiss
-const SILENCE_NUDGE = 'The caller has not answered at all. Thank them for calling, say they are welcome to call again to book their appointment, then call end_call. Say it in the caller\'s last language.';
+const SILENCE_NUDGE = (lang: string) => `The caller has not answered at all. Thank them for calling, say they are welcome to call again to book their appointment, then call end_call. Say it in ${lang}.`;
 
 // What the phone server did that also goes into the call's text (barber-core keeps it for the superadmins)
 const NOTE_EVENTS = new Set(['reask', 'silence_nudge', 'time_nudge', 'false_claim_corrected', 'unchecked_times_corrected',
@@ -93,6 +95,7 @@ export class CallSession {
   private talked = false; // the AI has answered the caller once (a conversation started)
   private turnText = ''; // what the AI said in this turn (output transcription)
   private turnTool = false; // the AI asked for a tool in this turn
+  private lockedLanguage: string | null = null; // the caller's language, once set_caller_language fixed it
   private lastTurns: string[] = []; // the AI's last finished turns, as text
   private slotWords = new Map<string, string[]>(); // a free time (start_iso) as check_availability said it
   private readBackRefused = 0;
@@ -253,7 +256,7 @@ export class CallSession {
         this.nudgePending = true;
         // loudMsAgo: how long ago the line was last loud (the caller may have answered and Gemini missed it)
         this.log('reask', { n: this.reasks, loudMsAgo: this.lastLoudAt ? Math.min(now - this.lastLoudAt, 99999) : -1, callerPeak: this.callerPeak, heardChars: this.heardChars, ...(this.ourTurns ? { turnsSent: this.turnsSent } : {}) });
-        this.gemini.send(JSON.stringify({ clientContent: { turns: [{ role: 'user', parts: [{ text: this.reasks === 1 ? REASK : REASK_OFFER }] }], turnComplete: true } }));
+        this.gemini.send(JSON.stringify({ clientContent: { turns: [{ role: 'user', parts: [{ text: this.reasks === 1 ? REASK(this.callLanguageName()) : REASK_OFFER(this.callLanguageName()) }] }], turnComplete: true } }));
       } else if (this.aiWaitingSince && this.reasks >= this.maxReasks() && !this.nudged
                  && now - this.aiWaitingSince > (this.talked ? SILENCE_NUDGE_MS : FIRST_SILENCE_NUDGE_MS)) {
         this.nudged = true;
@@ -264,7 +267,7 @@ export class CallSession {
         this.endedReason = 'silence-timed-out';
         this.hangUpWhenSaid = true;
         this.timers.push(this.deps.setTimer(GOODBYE_MAX_MS, () => void this.hangUp()));
-        this.gemini.send(JSON.stringify({ clientContent: { turns: [{ role: 'user', parts: [{ text: SILENCE_NUDGE }] }], turnComplete: true } }));
+        this.gemini.send(JSON.stringify({ clientContent: { turns: [{ role: 'user', parts: [{ text: SILENCE_NUDGE(this.callLanguageName()) }] }], turnComplete: true } }));
       }
       const audio = phoneToGemini(payloadB64);
       if (this.ourTurns) this.markTurn(audio, peak, now);
@@ -352,7 +355,14 @@ export class CallSession {
   }
 
   /** The caller's language, fixed by barber-core (set_caller_language): told to Gemini in the tool's answer. */
+  /** The call's language by name: the one the caller was heard in, else the salon's own (the opening's). */
+  private callLanguageName(): string {
+    const code = this.lockedLanguage ?? String(this.variables.default_language ?? 'en');
+    return LANGUAGE_NAMES[code.split('-')[0]] ?? code;
+  }
+
   private languageNote(code: string): string {
+    this.lockedLanguage = code;
     const name = LANGUAGE_NAMES[code.split('-')[0]] ?? code;
     this.log('language_locked', { language: code });
     return `The caller speaks ${name}. From now on listen for ${name} and answer only in ${name}, unless the caller clearly switches to another language. Never say again what you already said: if you asked a question, wait for the answer.`;

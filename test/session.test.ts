@@ -242,6 +242,23 @@ describe('a call', () => {
     assert.ok(h.logs.some(([e, d]) => e === 'gemini_setup' && d.startOfSpeechSensitivity === 'START_SENSITIVITY_HIGH'));
   });
 
+  it('a caller who never spoke: the re-ask and the goodbye are asked in the salon\'s language (not English in a Persian call)', async () => {
+    const clock = { t: Date.parse('2026-10-22T15:00:00Z') };
+    const fa = { ...OPEN, assistantOverrides: { ...OPEN.assistantOverrides, variableValues: { shop_name: 'Test Salon', default_language: 'fa-IR' } } };
+    const h = harness(fa, () => [], clock);
+    await h.s.start('MZ1', ids);
+    h.gem().onOpen();
+    await h.gem().onMessage(JSON.stringify({ setupComplete: {} }));
+    await heard(h);
+    const silent = Buffer.alloc(160, 0xff).toString('base64');
+    const said = () => h.sentToGemini.filter((m) => m.clientContent).map((m) => m.clientContent.turns[0].parts[0].text);
+    clock.t += 8000; h.s.fromCaller(silent);
+    assert.match(said().at(-1), /in Persian \(Farsi\) \(after the opening: just "How can I help you\?", said in Persian \(Farsi\)\)/);
+    await speak(h); await h.gem().onMessage(JSON.stringify({ serverContent: { turnComplete: true } }));
+    clock.t += 9000; h.s.fromCaller(silent);
+    assert.match(said().at(-1), /Say it in Persian \(Farsi\)\.$/);
+  });
+
   it('no answer to the question and both re-asks: 15 s later the AI thanks the caller and ends (once)', async () => {
     const clock = { t: Date.parse('2026-10-22T15:00:00Z') };
     const h = harness(OPEN, () => [], clock);
