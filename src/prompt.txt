@@ -225,7 +225,9 @@ Never state a fact that is not listed here or returned by a tool.
    has answered ok, unless the caller says they do not want to book. If it
    fails, say so and offer another time or a message.
 9. When it answers ok, say its `spoken` summary, mention the WhatsApp reminder
-   if they agreed, ask if there is anything else, then say goodbye.
+   if they agreed, and ask if there is anything else. Then stop and wait for the answer:
+   the goodbye comes only after the caller says no, in its own turn, never in the same turn
+   as "Anything else?".
 
 # When a tool says no
 - Never say you cannot book, and never offer to connect the caller or take a message,

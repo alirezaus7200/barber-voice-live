@@ -394,6 +394,57 @@ describe('a call', () => {
     ]);
   });
 
+  it('book_appointment only after a read-back with the chosen time and a question; without it the AI is told to read back first (once)', async () => {
+    const slots = [{ start_iso: '2026-10-30T13:00:00.000Z', local_time: '09:00', spoken: 'ساعت نه صبح', spoken_en: '9:00 AM' }];
+    const sentToCore: string[] = [];
+    const h = harness(OPEN, (list) => list.map((t) => {
+      sentToCore.push(t.name);
+      return { toolCallId: t.id, name: t.name, result: JSON.stringify(t.name === 'check_availability' ? { ok: true, slots } : { ok: true }) };
+    }));
+    await h.s.start('MZ1', ids);
+    h.gem().onOpen();
+    await h.gem().onMessage(JSON.stringify({ setupComplete: {} }));
+    await heard(h);
+    const tool = async (id: string, name: string, args: unknown = {}) => {
+      await h.gem().onMessage(JSON.stringify({ toolCall: { functionCalls: [{ id, name, args }] } }));
+      await new Promise((r) => setImmediate(r));
+      return h.sentToGemini.at(-1).toolResponse.functionResponses[0].response;
+    };
+    const turn = async (text: string) => {
+      await h.gem().onMessage(JSON.stringify({ serverContent: { outputTranscription: { text } } }));
+      await h.gem().onMessage(JSON.stringify({ serverContent: { turnComplete: true } }));
+    };
+    await tool('c1', 'check_availability');
+    await turn('یادآوری واتساپ براتون بفرستیم؟');
+    const held = await tool('b1', 'book_appointment', { start_iso: slots[0].start_iso });
+    assert.equal(held.reason, 'read_back_first');
+    assert.deepEqual(sentToCore.filter((n) => n !== 'previous_visit_reminder'), ['check_availability'], 'not sent to barber-core');
+    assert.ok(h.logs.some(([e]) => e === 'read_back_missing'));
+    await turn('اصلاح مو با عرفان، جمعه سی‌ام اکتبر ساعت نه صبح، به نام علیرضا نعمتی. درسته؟');
+    assert.equal((await tool('b2', 'book_appointment', { start_iso: slots[0].start_iso })).ok, true);
+    assert.deepEqual(sentToCore.filter((n) => n !== 'previous_visit_reminder'), ['check_availability', 'book_appointment']);
+  });
+
+  it('end_call while the caller has not answered the AI\'s question ("Anything else? Goodbye.") is refused; after the answer it ends', async () => {
+    const h = harness(OPEN, (list) => list.map((t) => ({ toolCallId: t.id, name: t.name, result: '{"ok":true}' })));
+    await h.s.start('MZ1', ids);
+    h.gem().onOpen();
+    await h.gem().onMessage(JSON.stringify({ setupComplete: {} }));
+    await heard(h);
+    await h.gem().onMessage(JSON.stringify({ toolCall: { functionCalls: [{ id: 'm1', name: 'take_message', args: { message: 'x' } }] } }));
+    await new Promise((r) => setImmediate(r));
+    await h.gem().onMessage(JSON.stringify({ serverContent: { outputTranscription: { text: 'کار دیگه‌ای دارید؟ خداحافظ.' } } }));
+    await h.gem().onMessage(JSON.stringify({ toolCall: { functionCalls: [{ id: 'e1', name: 'end_call' }] } }));
+    await new Promise((r) => setImmediate(r));
+    assert.equal(h.sentToGemini.at(-1).toolResponse.functionResponses[0].response.reason, 'caller_not_answered');
+    await h.gem().onMessage(JSON.stringify({ serverContent: { turnComplete: true } }));
+    await h.gem().onMessage(JSON.stringify({ serverContent: { inputTranscription: { text: 'نه ممنون' } } }));
+    await h.gem().onMessage(JSON.stringify({ serverContent: { outputTranscription: { text: 'خداحافظ.' } } }));
+    await h.gem().onMessage(JSON.stringify({ toolCall: { functionCalls: [{ id: 'e2', name: 'end_call' }] } }));
+    await new Promise((r) => setImmediate(r));
+    assert.equal(h.sentToGemini.at(-1).toolResponse.functionResponses[0].response.ok, true, 'the caller said no: the call ends');
+  });
+
   it('the AI asked and the caller says nothing for 5 s: it asks again; still nothing: the barber or a message', async () => {
     const clock = { t: Date.parse('2026-10-22T15:00:00Z') };
     const h = harness(OPEN, () => [], clock);

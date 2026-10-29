@@ -149,6 +149,7 @@ describe('the booking steps in the prompt', () => {
     const readBack = prompt.indexOf('Then read it all back in one sentence, every time, even when each part was\n   already agreed one by one');
     assert.ok(prompt.includes('Never call book_appointment before this read-back: a yes to the name is\n   not a yes to the booking'));
     assert.ok(prompt.includes('If the caller has not said a day, ask it first'), 'the day is asked, not taken as today');
+    assert.ok(prompt.includes('never in the same turn\n   as "Anything else?"'), 'the goodbye waits for the answer');
     assert.ok(prompt.includes("A known caller's name is on file: never\n   ask it"));
     assert.ok(prompt.includes('then say the name back and ask if it is right'), 'the heard name is confirmed');
     assert.ok(prompt.includes('never guess, never replace it\n   with another word, and never invent one'));
