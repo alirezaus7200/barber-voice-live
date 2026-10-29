@@ -77,7 +77,7 @@ wss.on('connection', (twilio) => {
           ws.on('open', h.onOpen);
           ws.on('message', (d) => h.onMessage(String(d)));
           // Google's close code and reason (e.g. a wrong model name or key) show in the host's logs; never the key
-          ws.on('close', (code, reason) => { log('gemini_closed', { code, reason: String(reason).slice(0, 300) }); h.onClose(code); });
+          ws.on('close', (code, reason) => { log('gemini_closed', { code, reason: String(reason).slice(0, 300) }); h.onClose(code, String(reason)); });
           ws.on('error', (e) => log('gemini_socket_error', { error: String(e.message) }));
           return { send: (d) => { if (ws.readyState === WebSocket.OPEN) ws.send(d); }, close: () => ws.close() };
         },

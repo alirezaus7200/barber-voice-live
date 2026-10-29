@@ -149,6 +149,8 @@ describe('the booking steps in the prompt', () => {
     const readBack = prompt.indexOf('Then read it all back in one sentence, every time, even when each part was\n   already agreed one by one');
     assert.ok(prompt.includes('Never call book_appointment before this read-back: a yes to the name is\n   not a yes to the booking'));
     assert.ok(prompt.includes('If the caller has not said a day, ask it first'), 'the day is asked, not taken as today');
+    assert.ok(prompt.includes('say how many there are\n   and their names'), 'how many staff members and who');
+    assert.ok(prompt.includes('A caller who did not greet gets no greeting'));
     assert.ok(prompt.includes('never in the same turn\n   as "Anything else?"'), 'the goodbye waits for the answer');
     assert.ok(prompt.includes("A known caller's name is on file: never\n   ask it"));
     assert.ok(prompt.includes('then say the name back and ask if it is right'), 'the heard name is confirmed');
@@ -182,7 +184,7 @@ describe('the booking steps in the prompt', () => {
     assert.ok(prompt.includes('{{known_caller}}'));
     assert.ok(prompt.includes('your first answer is its "offer", word for word'))
     assert.ok(prompt.includes('ask "is your staff member <name>?"'), 'the usual staff member is booked, not checked')
-    assert.ok(prompt.includes("If there is more than one staff member, say the staff members'\n   names and ask which one they want."), 'a new caller hears the names');
+    assert.ok(prompt.includes('If there is more than one staff member, say how many there are\n   and their names, then ask which one'), 'a new caller hears the names');
     assert.ok(prompt.includes('never ask "which staff member?" or "which service?": assume the usual ones.'));
     assert.ok(prompt.includes('Never guess a name, a time, a staff member or a service.'));
   });
