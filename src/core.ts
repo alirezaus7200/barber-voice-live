@@ -7,7 +7,7 @@ import { createHmac } from 'node:crypto';
 export type CallIds = { callId: string; to: string; from: string };
 export type CoreClient = ReturnType<typeof coreClient>;
 
-export function coreClient(o: { url: string; secret: string; fetch?: typeof fetch; now?: () => number }) {
+export function coreClient(o: { url: string; secret: string; fetch?: typeof fetch; now?: () => number; revision?: string }) {
   const send = async (message: Record<string, unknown>): Promise<any> => {
     const body = JSON.stringify({ message });
     const ts = String(Math.floor((o.now ?? Date.now)() / 1000));
@@ -40,7 +40,8 @@ export function coreClient(o: { url: string; secret: string; fetch?: typeof fetc
     },
     /** The call's end: its length and why it ended, and its text (barber-core keeps it for the superadmins). */
     end: (c: CallIds, x: { startedAt: string; endedAt: string; endedReason: string; transcript?: { speaker: string; body: string; at_ms: number }[] }) =>
-      send({ type: 'end-of-call-report', ...call(c), ...x }),
+      // this server's revision (Cloud Run's K_REVISION): barber-core's test checklist ticks a pass for it
+      send({ type: 'end-of-call-report', ...call(c), ...x, ...(o.revision ? { voiceRevision: o.revision } : {}) }),
   };
 }
 
