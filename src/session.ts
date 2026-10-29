@@ -55,6 +55,7 @@ const TURN_END_QUIET_MS = 700;
 const TURN_PREROLL_FRAMES = 10; // Twilio sends 20 ms frames
 // book_appointment only after the read-back (hard rule): the AI's last turn before it must have said the chosen time,
 // as check_availability gave it, and asked if it is right; else it is told to read back first (once a call)
+const NOT_OFFERED = 'Not booked yet: check_availability did not give that time. Call check_availability for that day with earliest_time set to it; use only a start_iso it returns, read it back, and book after a clear yes.';
 const READ_BACK_FIRST = 'Not booked yet. First read it all back in one sentence (staff member, services, weekday, date, time and the name) and ask "Is that right?"; call book_appointment again only after a clear yes.';
 // cancel_appointment only after the caller said yes to that one appointment: the list of their appointments
 // («…کدوم رو می‌خواید لغو کنید؟») is not that question, unless it had only one (once a call)
@@ -109,6 +110,7 @@ export class CallSession {
   private lastTurns: string[] = []; // the AI's last finished turns, as text
   private slotWords = new Map<string, string[]>(); // a free time (start_iso) as check_availability said it
   private readBackRefused = 0;
+  private notOfferedRefused = 0;
   private listingPending = false; // find_my_appointments answered: the AI's turn now lists them
   private listText = ''; // that turn's words (the list, not the confirmation)
   private apptCount = 0;
@@ -455,16 +457,25 @@ export class CallSession {
     return last !== this.listText || this.apptCount === 1;
   }
 
+  /** check_availability gave this start in this call (the same instant, however it is written). */
+  private offered(start: unknown): boolean {
+    const t = typeof start === 'string' ? Date.parse(start) : NaN;
+    if (Number.isNaN(t)) return true; // not a time: barber-core answers invalid_input
+    return [...this.slotWords.keys()].some((iso) => Date.parse(iso) === t);
+  }
+
   /** The AI's last finished turn read the booking back: it said the chosen time and asked if it is right. */
   private readBackDone(start: unknown): boolean {
     if (typeof start !== 'string') return true;
-    const words = this.slotWords.get(start);
+    const t = Date.parse(start);
+    const key = [...this.slotWords.keys()].find((iso) => iso === start || Date.parse(iso) === t) ?? start;
+    const words = this.slotWords.get(key);
     if (!words?.length) return true; // a time this call did not offer (nothing to compare): the database still checks it
     const last = this.lastTurns.at(-1) ?? '';
     if (!/[?؟]/.test(last) || !words.some((w) => last.includes(w))) return false;
     // the offer itself («…نه و نیم صبح، دو بعد از ظهر یا شش و نیم عصر… کدوم؟») has the chosen time and a question
     // too: a read-back names only the chosen time, never another one that was offered
-    const others = [...this.slotWords.entries()].filter(([iso]) => iso !== start).map(([, w]) => w[0])
+    const others = [...this.slotWords.entries()].filter(([iso]) => iso !== key).map(([, w]) => w[0])
       .filter((w) => w && !words.some((own) => own.includes(w)));
     return !others.some((w) => last.includes(w));
   }
@@ -627,6 +638,7 @@ export class CallSession {
     }
     // a booking with no read-back before it is not sent: the AI reads back first (once a call)
     const held = new Set<string>();
+    const notOffered = new Set<string>(); // held because check_availability never gave that time
     // an appointment id the AI made up (not one find_my_appointments gave): it is told the real ones, never sent
     const badId = new Map<string, unknown>();
     for (const c of calls) {
@@ -654,7 +666,15 @@ export class CallSession {
         continue;
       }
       const start = c.name === 'book_appointment' ? args?.start_iso : c.name === 'reschedule_appointment' ? args?.new_start_iso : undefined;
-      if (start === undefined || this.readBackRefused >= 1 || this.readBackDone(start)) continue;
+      if (start === undefined) continue;
+      if (this.notOfferedRefused < 1 && !this.offered(start)) {
+        held.add(c.id);
+        notOffered.add(c.id);
+        this.notOfferedRefused += 1;
+        this.log('time_not_offered', {});
+        continue;
+      }
+      if (this.readBackRefused >= 1 || this.readBackDone(start)) continue;
       held.add(c.id);
       this.readBackRefused += 1;
       this.log('read_back_missing', {});
@@ -679,8 +699,11 @@ export class CallSession {
       }
       if (held.has(c.id)) {
         const cancel = c.name === 'cancel_appointment';
-        this.line('tool', `${c.name} → held: ${cancel ? 'confirm first' : 'read back first'}`);
-        responses.push({ id: c.id, name: c.name, response: cancel
+        const why = notOffered.has(c.id) ? 'time not offered' : cancel ? 'confirm first' : 'read back first';
+        this.line('tool', `${c.name} → held: ${why}`);
+        responses.push({ id: c.id, name: c.name, response: notOffered.has(c.id)
+          ? { ok: false, reason: 'time_not_offered', hint: NOT_OFFERED }
+          : cancel
           ? { ok: false, reason: 'confirm_first', hint: CONFIRM_CANCEL }
           : { ok: false, reason: 'read_back_first', hint: READ_BACK_FIRST } });
         continue;
@@ -721,7 +744,13 @@ export class CallSession {
       // the reason code only (e.g. slot_taken), never the arguments or the caller's data
       this.log('tool_result', { tool: c.name, ok: result?.ok === true, ...(result?.ok === true ? {} : { reason: String(result?.reason ?? '').slice(0, 40) }) });
       if (result?.ok === true && ['check_availability', 'find_my_appointments'].includes(c.name)) this.timesChecked = true;
-      if (c.name === 'check_availability' && result?.ok === true && Array.isArray(result.slots)) this.rememberSlots(result.slots);
+      // every time it gave: that day's, the next free day's and other staff members' (the move test offered only the
+      // next day's times, so none were remembered and its booking went through with no read-back)
+      if (c.name === 'check_availability' && result?.ok === true) {
+        this.rememberSlots([...(Array.isArray(result.slots) ? result.slots : []),
+          ...(Array.isArray(result.next_day_with_openings?.slots) ? result.next_day_with_openings.slots : []),
+          ...(Array.isArray(result.other_barbers) ? result.other_barbers.flatMap((b: any) => (Array.isArray(b?.slots) ? b.slots : [])) : [])]);
+      }
       if (c.name === 'find_my_appointments' && result?.ok === true && Array.isArray(result.appointments)) {
         this.apptCount = result.appointments.length;
         this.listingPending = true;
