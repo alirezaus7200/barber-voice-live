@@ -368,7 +368,7 @@ export class CallSession {
     this.lockedLanguage = code;
     const name = LANGUAGE_NAMES[code.split('-')[0]] ?? code;
     this.log('language_locked', { language: code });
-    return `The caller speaks ${name}. From now on listen for ${name} and answer only in ${name}, unless the caller clearly switches to another language. Never say again what you already said: if you asked a question, wait for the answer.`;
+    return `The caller speaks ${name}. From now on listen for ${name} and answer only in ${name}, unless the caller clearly switches to another language. Say nothing more now: no new question and nothing you already said. If you asked a question, wait silently for the caller's answer.`;
   }
 
   /** Start-up timing: how long after Twilio's start each step came (the caller hears nothing until first_audio). */

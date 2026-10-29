@@ -654,6 +654,7 @@ describe('a call', () => {
     const answer = h.sentToGemini.at(-1).toolResponse.functionResponses[0].response;
     assert.equal(answer.ok, true);
     assert.match(answer.next, /speaks Persian \(Farsi\).*answer only in Persian/s, 'told in the tool answer, not as a separate turn');
+    assert.match(answer.next, /Say nothing more now: no new question.*wait silently for the caller's answer/, 'no second question after it («کدوم رو ترجیح می‌دید؟برای چه خدمتی؟»)');
     assert.deepEqual(h.logs.find(([e]) => e === 'language_locked'), ['language_locked', { language: 'fa-IR' }]);
     await h.gem().onMessage(JSON.stringify({ toolCall: { functionCalls: [{ id: 'l2', name: 'set_caller_language', args: { language: 'fr' } }] } }));
     await new Promise((r) => setImmediate(r));
