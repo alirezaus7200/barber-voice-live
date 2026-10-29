@@ -56,6 +56,9 @@ const TURN_PREROLL_FRAMES = 10; // Twilio sends 20 ms frames
 // book_appointment only after the read-back (hard rule): the AI's last turn before it must have said the chosen time,
 // as check_availability gave it, and asked if it is right; else it is told to read back first (once a call)
 const READ_BACK_FIRST = 'Not booked yet. First read it all back in one sentence (staff member, services, weekday, date, time and the name) and ask "Is that right?"; call book_appointment again only after a clear yes.';
+// cancel_appointment only after the caller said yes to that one appointment: the list of their appointments
+// («…کدوم رو می‌خواید لغو کنید؟») is not that question, unless it had only one (once a call)
+const CONFIRM_CANCEL = 'Not cancelled yet. First ask about that one appointment, in one sentence with its day, time and staff member ("Shall I cancel your Friday 2:30 PM with Erfan?"); call cancel_appointment again only after a clear yes.';
 // end_call while the caller has not answered the AI's last question ("Anything else? Goodbye."): wait (twice a call at most)
 const WAIT_FOR_ANSWER = 'You asked the caller a question and they have not answered yet. Say nothing more now; wait for their answer.';
 const SILENCE_NUDGE_MS = 15000; // after both re-asks the caller still says nothing this long: the AI thanks them and ends the call
@@ -74,7 +77,8 @@ const SILENCE_NUDGE = (lang: string) => `The caller has not answered at all. Tha
 // What the phone server did that also goes into the call's text (barber-core keeps it for the superadmins)
 const NOTE_EVENTS = new Set(['reask', 'silence_nudge', 'time_nudge', 'false_claim_corrected', 'unchecked_times_corrected',
   'end_call_refused', 'language_locked', 'gemini_retry', 'gemini_go_away', 'core_tools_failed', 'tool_unknown',
-  'tool_before_opening', 'opening_again', 'twilio_update_failed', 'call_ended', 'gemini_setup', 'repeat_muted']);
+  'tool_before_opening', 'opening_again', 'twilio_update_failed', 'call_ended', 'gemini_setup', 'repeat_muted',
+  'cancel_confirm_missing', 'read_back_missing']);
 const TRANSCRIPT_MAX_CHARS = 200_000; // a long call's text stays a small report
 type TranscriptLine = { speaker: 'ai' | 'caller' | 'tool' | 'system'; body: string; at_ms: number };
 
@@ -102,6 +106,10 @@ export class CallSession {
   private lastTurns: string[] = []; // the AI's last finished turns, as text
   private slotWords = new Map<string, string[]>(); // a free time (start_iso) as check_availability said it
   private readBackRefused = 0;
+  private listingPending = false; // find_my_appointments answered: the AI's turn now lists them
+  private listText = ''; // that turn's words (the list, not the confirmation)
+  private apptCount = 0;
+  private cancelRefused = 0;
   private askedAt = 0; // when the AI last asked something (a ? in its words)
   private callerAt = 0; // when the caller last said something
   private endRefusedForQuestion = 0;
@@ -433,6 +441,14 @@ export class CallSession {
     }
   }
 
+  /** The caller was asked about the one appointment to cancel: the AI's last turn is a question, and not the list of
+   *  their appointments (unless there was only one, which that question names). */
+  private cancelConfirmed(): boolean {
+    const last = this.lastTurns.at(-1) ?? '';
+    if (!/[?؟]/.test(last)) return false;
+    return last !== this.listText || this.apptCount === 1;
+  }
+
   /** The AI's last finished turn read the booking back: it said the chosen time and asked if it is right. */
   private readBackDone(start: unknown): boolean {
     if (typeof start !== 'string') return true;
@@ -550,7 +566,10 @@ export class CallSession {
       this.callerPeak = 0;
       this.heardChars = 0;
       this.checkTimes();
-      if (this.turnText.trim()) { this.lastTurns.push(this.turnText); if (this.lastTurns.length > 6) this.lastTurns.shift(); }
+      if (this.turnText.trim()) {
+        this.lastTurns.push(this.turnText); if (this.lastTurns.length > 6) this.lastTurns.shift();
+        if (this.listingPending) { this.listText = this.turnText; this.listingPending = false; }
+      }
       this.turnText = '';
       this.turnTool = false;
       this.muteRestOfTurn = false;
@@ -603,7 +622,15 @@ export class CallSession {
     // a booking with no read-back before it is not sent: the AI reads back first (once a call)
     const held = new Set<string>();
     for (const c of calls) {
-      if (c.name !== 'book_appointment' || this.readBackRefused >= 1 || this.readBackDone((c.args as any)?.start_iso)) continue;
+      const args = c.args as any;
+      if (c.name === 'cancel_appointment' && this.cancelRefused < 1 && !this.cancelConfirmed()) {
+        held.add(c.id);
+        this.cancelRefused += 1;
+        this.log('cancel_confirm_missing', {});
+        continue;
+      }
+      const start = c.name === 'book_appointment' ? args?.start_iso : c.name === 'reschedule_appointment' ? args?.new_start_iso : undefined;
+      if (start === undefined || this.readBackRefused >= 1 || this.readBackDone(start)) continue;
       held.add(c.id);
       this.readBackRefused += 1;
       this.log('read_back_missing', {});
@@ -622,8 +649,11 @@ export class CallSession {
     }
     for (const c of calls) {
       if (held.has(c.id)) {
-        this.line('tool', `${c.name} → held: read back first`);
-        responses.push({ id: c.id, name: c.name, response: { ok: false, reason: 'read_back_first', hint: READ_BACK_FIRST } });
+        const cancel = c.name === 'cancel_appointment';
+        this.line('tool', `${c.name} → held: ${cancel ? 'confirm first' : 'read back first'}`);
+        responses.push({ id: c.id, name: c.name, response: cancel
+          ? { ok: false, reason: 'confirm_first', hint: CONFIRM_CANCEL }
+          : { ok: false, reason: 'read_back_first', hint: READ_BACK_FIRST } });
         continue;
       }
       if (c.name === 'end_call' && !this.hangUpWhenSaid && !this.nudged && this.askedAt > this.callerAt && this.endRefusedForQuestion < 2) {
@@ -663,6 +693,7 @@ export class CallSession {
       this.log('tool_result', { tool: c.name, ok: result?.ok === true, ...(result?.ok === true ? {} : { reason: String(result?.reason ?? '').slice(0, 40) }) });
       if (result?.ok === true && ['check_availability', 'find_my_appointments'].includes(c.name)) this.timesChecked = true;
       if (c.name === 'check_availability' && result?.ok === true && Array.isArray(result.slots)) this.rememberSlots(result.slots);
+      if (c.name === 'find_my_appointments' && result?.ok === true && Array.isArray(result.appointments)) { this.apptCount = result.appointments.length; this.listingPending = true; }
       if (result?.ok === true && ['book_appointment', 'take_message', 'transfer_to_human', 'cancel_appointment', 'reschedule_appointment'].includes(c.name)) this.outcome = true;
       // the call's language is fixed: Gemini listens for it and answers only in it from now on
       if (c.name === 'set_caller_language' && result?.ok === true && typeof result.language === 'string') {
