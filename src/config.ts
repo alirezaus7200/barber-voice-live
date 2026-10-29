@@ -6,6 +6,8 @@ export type Config = {
   geminiApiKey: string; geminiModel: string; geminiVoice: string;
   // how readily Gemini hears the start of the caller's speech (Cloud Run settings, no code change): unset = Gemini's own
   geminiStartSensitivity?: 'START_SENSITIVITY_HIGH' | 'START_SENSITIVITY_LOW'; geminiPrefixPaddingMs?: number;
+  // GEMINI_TURNS=ours: this server tells Gemini when the caller starts and stops speaking (its own detection lets short answers pass)
+  geminiOurTurns?: boolean;
 };
 
 export function loadConfig(env: Record<string, string | undefined>): Config {
@@ -30,13 +32,14 @@ export function loadConfig(env: Record<string, string | undefined>): Config {
   };
 }
 
-/** GEMINI_START_SENSITIVITY (HIGH or LOW) and GEMINI_PREFIX_PADDING_MS (0 to 1000): unset or wrong = Gemini's own. */
-export function activitySettings(env: Record<string, string | undefined>): Pick<Config, 'geminiStartSensitivity' | 'geminiPrefixPaddingMs'> {
+/** GEMINI_START_SENSITIVITY (HIGH or LOW), GEMINI_PREFIX_PADDING_MS (0 to 1000) and GEMINI_TURNS (ours): unset or wrong = Gemini's own. */
+export function activitySettings(env: Record<string, string | undefined>): Pick<Config, 'geminiStartSensitivity' | 'geminiPrefixPaddingMs' | 'geminiOurTurns'> {
   const s = env.GEMINI_START_SENSITIVITY?.trim().toUpperCase();
   const p = env.GEMINI_PREFIX_PADDING_MS?.trim();
   const ms = p && /^\d{1,4}$/.test(p) && Number(p) <= 1000 ? Number(p) : undefined;
   return {
     ...(s === 'HIGH' || s === 'LOW' ? { geminiStartSensitivity: `START_SENSITIVITY_${s}` as const } : {}),
     ...(ms !== undefined ? { geminiPrefixPaddingMs: ms } : {}),
+    ...(env.GEMINI_TURNS?.trim().toLowerCase() === 'ours' ? { geminiOurTurns: true } : {}),
   };
 }

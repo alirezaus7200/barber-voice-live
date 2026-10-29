@@ -65,6 +65,7 @@ wss.on('connection', (twilio) => {
           ...(cfg.geminiStartSensitivity ? { startOfSpeechSensitivity: cfg.geminiStartSensitivity } : {}),
           ...(cfg.geminiPrefixPaddingMs !== undefined ? { prefixPaddingMs: cfg.geminiPrefixPaddingMs } : {}),
         },
+        ourTurns: cfg.geminiOurTurns === true,
         now: () => new Date(),
         setTimer: (ms, fn) => setTimeout(fn, ms), clearTimer: (t) => clearTimeout(t as NodeJS.Timeout),
         updateCall: (callSid, twiml) => updateCall({ accountSid: cfg.twilioAccountSid, authToken: cfg.twilioAuthToken, callSid, twiml }),

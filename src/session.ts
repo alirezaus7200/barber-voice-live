@@ -18,6 +18,8 @@ export type SessionDeps = {
   model: string;
   /** Gemini's start-of-speech settings (from Cloud Run's settings); unset = Gemini's own. */
   activity?: { startOfSpeechSensitivity?: string; prefixPaddingMs?: number };
+  /** This server marks the caller's turns (activityStart/activityEnd) instead of Gemini's own detection. */
+  ourTurns?: boolean;
   voice: string;
   setTimer(ms: number, fn: () => void): unknown;
   clearTimer(t: unknown): void;
@@ -42,6 +44,13 @@ const FALSE_CLAIM = 'Correction: nothing has been booked, cancelled or moved in 
 // a time of day said out loud (en, es, fa): an offer of times is only real after check_availability answered
 const TIME_SAID = /\b\d{1,2}[:.]\d{2}\b|[۰-۹]{1,2}[:٫][۰-۹]{2}|\b\d{1,2}\s?(a\.?m\.?|p\.?m\.?)(?![a-z])|ساعت\s*([\d۰-۹]|یک|دو|سه|چهار|پنج|شش|هفت|هشت|نه|ده|یازده|دوازده)|\ba las (\d|una|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez|once|doce)\b/i;
 const UNCHECKED_TIMES = 'Correction: the times you just said did not come from check_availability (it has not answered in this call), so they may not be free. Tell the caller in one short sentence, in their language, that you will check, then call check_availability now and offer only the times it returns.';
+// Our own turns (GEMINI_TURNS=ours): a turn starts when the caller's voice is clearly above the line's hiss (a
+// louder one while the AI is talking, so its echo does not cut it off), with the last ~200 ms before it, and
+// ends after 700 ms of quiet; Gemini then answers every turn, however short («بله»).
+const TURN_START_PEAK = 1500;
+const TURN_START_PEAK_OVER_AI = 4000;
+const TURN_END_QUIET_MS = 700;
+const TURN_PREROLL_FRAMES = 10; // Twilio sends 20 ms frames
 const SILENCE_NUDGE_MS = 15000; // after both re-asks the caller still says nothing this long: the AI thanks them and ends the call
 const REASK_MS = 5000; // the AI asked and the caller says nothing this long: the AI asks again (callers do not wait in silence)
 const REASK = 'The caller has not answered for about 5 seconds. Say out loud now only your last question again, short, in the caller\'s language (after the opening: just "How can I help you?"). Add nothing else: never say they have not answered.';
@@ -89,6 +98,11 @@ export class CallSession {
   private transcriptChars = 0;
   private aiLine: TranscriptLine | null = null; // the AI's turn being written down
   private callerLine: TranscriptLine | null = null; // the caller's words since the AI last finished a turn
+  private ourTurns = false; // this call marks the caller's turns itself (not on the plain retry)
+  private inTurn = false;
+  private turnQuietSince = 0;
+  private preroll: string[] = [];
+  private turnsSent = 0;
   private callerPeak = 0; // the caller's loudest frame since the AI last finished a turn (of 32767)
   private heardChars = 0; // how much Gemini wrote down of the caller since then (a count only, never the words)
   private toolsRunning = 0;
@@ -161,7 +175,8 @@ export class CallSession {
   /** One Gemini Live session for this call. If Gemini refuses it at once (1007), it is opened once more. */
   private connectGemini(plain = false) {
     // which hearing settings this call used: in its text, so a test result says which one passed
-    this.log('gemini_setup', { model: this.deps.model, plain, ...this.deps.activity });
+    this.ourTurns = this.deps.ourTurns === true && !plain;
+    this.log('gemini_setup', { model: this.deps.model, plain, ...this.deps.activity, ...(this.ourTurns ? { turns: 'ours' } : {}) });
     this.gemini = this.deps.openGemini({
       onOpen: () => this.gemini?.send(JSON.stringify({
         setup: {
@@ -170,7 +185,7 @@ export class CallSession {
           // a short pause before the AI answers; default sensitivity so a quiet caller is heard
           // the plain setting is the retry after Gemini refused the full one (1007)
           // the AI's words as text (outputAudioTranscription): to catch a "booked" or times no tool gave
-          ...(plain ? {} : { realtimeInputConfig: { automaticActivityDetection: { silenceDurationMs: 600, ...this.deps.activity } }, contextWindowCompression: { slidingWindow: {} }, inputAudioTranscription: {}, outputAudioTranscription: {} }),
+          ...(plain ? {} : { realtimeInputConfig: { automaticActivityDetection: this.ourTurns ? { disabled: true } : { silenceDurationMs: 600, ...this.deps.activity } }, contextWindowCompression: { slidingWindow: {} }, inputAudioTranscription: {}, outputAudioTranscription: {} }),
           systemInstruction: { parts: [{ text: fillPrompt(this.deps.prompt, this.variables) + this.openingNote() }] },
           tools: geminiTools(),
         },
@@ -226,7 +241,7 @@ export class CallSession {
         this.aiWaitingSince = now;
         this.nudgePending = true;
         // loudMsAgo: how long ago the line was last loud (the caller may have answered and Gemini missed it)
-        this.log('reask', { n: this.reasks, loudMsAgo: this.lastLoudAt ? Math.min(now - this.lastLoudAt, 99999) : -1, callerPeak: this.callerPeak, heardChars: this.heardChars });
+        this.log('reask', { n: this.reasks, loudMsAgo: this.lastLoudAt ? Math.min(now - this.lastLoudAt, 99999) : -1, callerPeak: this.callerPeak, heardChars: this.heardChars, ...(this.ourTurns ? { turnsSent: this.turnsSent } : {}) });
         this.gemini.send(JSON.stringify({ clientContent: { turns: [{ role: 'user', parts: [{ text: this.reasks === 1 ? REASK : REASK_OFFER }] }], turnComplete: true } }));
       } else if (this.aiWaitingSince && this.reasks >= this.maxReasks() && !this.nudged
                  && now - this.aiWaitingSince > (this.talked ? SILENCE_NUDGE_MS : FIRST_SILENCE_NUDGE_MS)) {
@@ -240,8 +255,38 @@ export class CallSession {
         this.timers.push(this.deps.setTimer(GOODBYE_MAX_MS, () => void this.hangUp()));
         this.gemini.send(JSON.stringify({ clientContent: { turns: [{ role: 'user', parts: [{ text: SILENCE_NUDGE }] }], turnComplete: true } }));
       }
-      this.gemini.send(JSON.stringify({ realtimeInput: { audio: { data: phoneToGemini(payloadB64), mimeType: 'audio/pcm;rate=16000' } } }));
+      const audio = phoneToGemini(payloadB64);
+      if (this.ourTurns) this.markTurn(audio, peak, now);
+      else this.sendAudio(audio);
     }
+  }
+
+  private sendAudio(data: string) {
+    this.gemini?.send(JSON.stringify({ realtimeInput: { audio: { data, mimeType: 'audio/pcm;rate=16000' } } }));
+  }
+
+  /** Our own turns: start on a clear voice (with the ~200 ms before it), end after a short quiet; Gemini answers each one. */
+  private markTurn(audio: string, peak: number, now: number) {
+    if (!this.inTurn) {
+      this.preroll.push(audio);
+      if (this.preroll.length > TURN_PREROLL_FRAMES) this.preroll.shift();
+      const aiTalking = this.turnAudio || now - this.lastAiAudioAt < 1500;
+      if (peak <= (aiTalking ? TURN_START_PEAK_OVER_AI : TURN_START_PEAK)) return;
+      this.inTurn = true;
+      this.turnQuietSince = 0;
+      this.gemini?.send(JSON.stringify({ realtimeInput: { activityStart: {} } }));
+      for (const a of this.preroll) this.sendAudio(a);
+      this.preroll = [];
+      return;
+    }
+    this.sendAudio(audio);
+    if (peak > SPEECH_PEAK) { this.turnQuietSince = 0; return; }
+    if (!this.turnQuietSince) { this.turnQuietSince = now; return; }
+    if (now - this.turnQuietSince < TURN_END_QUIET_MS) return;
+    this.gemini?.send(JSON.stringify({ realtimeInput: { activityEnd: {} } }));
+    this.inTurn = false;
+    this.turnQuietSince = 0;
+    this.turnsSent += 1;
   }
 
   /** The opening first, word for word: our ready-made audio if there is one, else Gemini says it. */
