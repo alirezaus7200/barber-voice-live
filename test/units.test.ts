@@ -234,6 +234,7 @@ describe('the booking steps in the prompt', () => {
     assert.ok(prompt.includes('Never say goodbye instead of taking the message.'));
     assert.ok(prompt.includes('not ask them anything more and do not say goodbye yet'), 'a message needs no more questions, and no early goodbye');
     assert.ok(prompt.includes('Say goodbye only once in\na call, as your very last words'));
+    assert.ok(prompt.includes("that appointment's staff_id and service_ids"), 'a move keeps its staff member and services');
   });
 });
 
