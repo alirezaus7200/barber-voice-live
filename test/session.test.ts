@@ -648,6 +648,31 @@ describe('a call', () => {
     assert.equal((await tool('b3', 'book_appointment', { start_iso: slots[0].start_iso })).ok, true);
   });
 
+  it('after the read-back and the caller\'s yes, "I have booked you … Is there anything else?" with the booking is not held', async () => {
+    const slots = [{ start_iso: '2026-11-02T14:30:00.000Z', local_time: '09:30', spoken: '9:30 AM', spoken_en: '9:30 AM' },
+      { start_iso: '2026-11-02T18:30:00.000Z', local_time: '13:30', spoken: '1:30 PM', spoken_en: '1:30 PM' }];
+    const h = harness(OPEN, (list) => list.map((t) => ({ toolCallId: t.id, name: t.name,
+      result: JSON.stringify(t.name === 'check_availability' ? { ok: true, day_spoken: 'Monday, November 2', slots } : { ok: true }) })));
+    await h.s.start('MZ1', ids);
+    h.gem().onOpen();
+    await h.gem().onMessage(JSON.stringify({ setupComplete: {} }));
+    await heard(h);
+    const tool = async (id: string, name: string, args: unknown = {}) => {
+      await h.gem().onMessage(JSON.stringify({ toolCall: { functionCalls: [{ id, name, args }] } }));
+      await new Promise((r) => setImmediate(r));
+      return h.sentToGemini.at(-1).toolResponse.functionResponses[0].response;
+    };
+    const said = (text: string) => h.gem().onMessage(JSON.stringify({ serverContent: { outputTranscription: { text } } }));
+    const over = () => h.gem().onMessage(JSON.stringify({ serverContent: { turnComplete: true } }));
+    await tool('c1', 'check_availability');
+    await said('Erfan is free on Monday, November 2nd at 9:30 AM or 1:30 PM. Which suits you?'); await over();
+    await said('A haircut with Erfan on Monday, November 2nd, at 9:30 AM, is that right?'); await over();
+    await h.gem().onMessage(JSON.stringify({ serverContent: { inputTranscription: { text: 'Yes.' } } }));
+    await said('One moment. I have booked you for a haircut with Erfan on Monday, November 2nd, at 9:30 AM. Is there anything else?');
+    assert.equal((await tool('b1', 'book_appointment', { start_iso: slots[0].start_iso })).ok, true, 'the yes was given: no «system error»');
+    assert.ok(!h.logs.some(([e]) => e === 'read_back_missing'));
+  });
+
   it('cancel_appointment only after a question about that one appointment: the list of the caller\'s appointments is not it (once)', async () => {
     const appts = [{ appointment_id: 'a1', local_time: '09:00' }, { appointment_id: 'a2', local_time: '14:30' }];
     const sent: string[] = [];
