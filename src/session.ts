@@ -32,6 +32,7 @@ export type SessionDeps = {
 const TRANSFER_DELAY_MS = 4000; // the AI says "connecting you now" first
 const LANGUAGE_NAMES: Record<string, string> = { en: 'English', es: 'Spanish', fa: 'Persian (Farsi)' };
 const FIRST_SILENCE_NUDGE_MS = 8000; // the caller never spoke: the goodbye comes this long after the one re-ask
+const REPLY_GRACE_MS = 15000; // after the caller's turn, Gemini gets this long to answer before the silence count starts
 const WAIT_RESTART_MS = 8000; // the AI has been quiet this long with nothing running: the silence count starts again
 const CALLER_PAUSE_MS = 3000; // ... once the caller has been quiet this long
 const OPENING_AUDIO_WAIT_MS = 4000; // the ready-made opening is late: Gemini says it instead
@@ -271,7 +272,10 @@ export class CallSession {
       // silence counts only while the AI waits for an answer (never while it thinks, runs a tool or speaks)
       // the AI is quiet, no tool runs and the caller is quiet, but no wait is counted (e.g. the AI was cut
       // off, or never answered): count again, so the line is never silent for good
-      if (!this.aiWaitingSince && !this.toolsRunning && !this.hangUpWhenSaid
+      // nor while Gemini is still answering a turn the caller just finished (it once took 13 s for «نوبت», and
+      // the re-ask in between came out as an extra "Which day?" in the opening's language)
+      const answering = this.callerAt > this.lastAiAudioAt && now - this.callerAt < REPLY_GRACE_MS;
+      if (!this.aiWaitingSince && !this.toolsRunning && !this.hangUpWhenSaid && !answering
           && now - this.lastAiAudioAt > WAIT_RESTART_MS && now - this.lastLoudAt > CALLER_PAUSE_MS) {
         this.aiWaitingSince = now;
         this.log('wait_restarted', {});

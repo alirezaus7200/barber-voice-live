@@ -213,6 +213,27 @@ describe('a call', () => {
     assert.equal(kinds().length, n, 'no audio between turns');
   });
 
+  it('our own turns: no re-ask while Gemini is still answering the caller\'s turn (up to 15 s); after that the count starts again', async () => {
+    const clock = { t: Date.parse('2026-10-22T15:00:00Z') };
+    const h = harness(OPEN, () => [], clock);
+    (h.s as any).deps.ourTurns = true;
+    await h.s.start('MZ1', ids);
+    h.gem().onOpen();
+    await h.gem().onMessage(JSON.stringify({ setupComplete: {} }));
+    await heard(h);
+    await talked(h);
+    clock.t += 3000;
+    const silent = Buffer.alloc(160, 0xff).toString('base64');
+    const loud = Buffer.alloc(160, 0x00).toString('base64');
+    for (let i = 0; i < 15; i++) { clock.t += 20; h.s.fromCaller(loud); } // «نوبت»
+    for (let i = 0; i < 40; i++) { clock.t += 20; h.s.fromCaller(silent); } // the turn ends
+    assert.ok(h.sentToGemini.some((m) => m.realtimeInput?.activityEnd));
+    for (let i = 0; i < 13; i++) { clock.t += 1000; h.s.fromCaller(silent); } // Gemini thinks for 13 s
+    assert.ok(!h.logs.some(([e]) => e === 'wait_restarted' || e === 'reask'), 'Gemini is still answering: no re-ask over it');
+    for (let i = 0; i < 20; i++) { clock.t += 1000; h.s.fromCaller(silent); } // it never answers
+    assert.ok(h.logs.some(([e]) => e === 'wait_restarted'), 'the line is never silent for good');
+  });
+
   it('our own turns: while the AI\'s words still play at the caller only a louder voice starts one (its echo does not cut it off); then a normal one does', async () => {
     const clock = { t: Date.parse('2026-10-22T15:00:00Z') };
     const h = harness(OPEN, () => [], clock);
