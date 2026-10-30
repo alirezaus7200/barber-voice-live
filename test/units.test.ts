@@ -237,6 +237,7 @@ describe('the booking steps in the prompt', () => {
     assert.ok(prompt.includes("that appointment's staff_id and service_ids"), 'a move keeps its staff member and services');
     assert.ok(prompt.includes("same_time: that is already their appointment's time"), 'a move to its own time is said, not claimed');
     assert.ok(prompt.includes('A move is reschedule_appointment, never book_appointment'));
+    assert.ok(prompt.includes('Its own day is not the new day'), 'a move asks the new day first');
     assert.ok(prompt.includes('the day after Friday,\n  October 30 is Saturday, October 31'));
   });
 });
