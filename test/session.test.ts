@@ -925,7 +925,7 @@ describe('a call', () => {
     assert.ok(!h.logs.some(([e]) => e === 'reask'), 'no re-ask while the caller speaks');
   });
 
-  it('"booked" with no tool ok is caught from the AI\'s own words and corrected at once; the call does not end on it', async () => {
+  it('"booked" with no tool ok is caught from the AI\'s own words and corrected after its turn; the call does not end on it', async () => {
     const h = harness(OPEN, (list) => list.map((t) => ({ toolCallId: t.id, name: t.name, result: '{"ok":true}' })));
     await h.s.start('MZ1', ids);
     h.gem().onOpen();
@@ -934,6 +934,9 @@ describe('a call', () => {
     await heard(h);
     await h.gem().onMessage(JSON.stringify({ serverContent: { outputTranscription: { text: 'قرار ملاقات شما فردا ساعت ۱۱ ' } } }));
     await h.gem().onMessage(JSON.stringify({ serverContent: { outputTranscription: { text: 'با عرفان ثبت شد.' } } }));
+    assert.ok(!h.logs.some(([e]) => e === 'false_claim_corrected'), 'not in the middle of the turn: the tool may come after the words');
+    await h.gem().onMessage(JSON.stringify({ serverContent: { turnComplete: true } }));
+    h.timers.filter((x) => x.ms === 3000).at(-1)!.fn(); // a little after the turn, still no tool
     const told = h.sentToGemini.filter((m) => m.clientContent).at(-1).clientContent;
     assert.match(told.turns[0].parts[0].text, /^Correction: nothing has been booked/);
     assert.ok(h.logs.some(([e]) => e === 'false_claim_corrected'));
@@ -949,6 +952,20 @@ describe('a call', () => {
     assert.equal(h.sentToGemini.filter((m) => m.clientContent).length, before);
   });
 
+
+  it('"booked" said just before the booking tool: no correction once the tool answered ok', async () => {
+    const h = harness(OPEN, (list) => list.map((t) => ({ toolCallId: t.id, name: t.name, result: '{"ok":true}' })));
+    await h.s.start('MZ1', ids);
+    h.gem().onOpen();
+    await h.gem().onMessage(JSON.stringify({ setupComplete: {} }));
+    await heard(h);
+    await h.gem().onMessage(JSON.stringify({ serverContent: { outputTranscription: { text: 'وقتتون ثبت شد. چیز دیگه‌ای هست؟' } } }));
+    await h.gem().onMessage(JSON.stringify({ serverContent: { turnComplete: true } }));
+    await h.gem().onMessage(JSON.stringify({ toolCall: { functionCalls: [{ id: 'b1', name: 'book_appointment', args: {} }] } }));
+    await new Promise((r) => setImmediate(r));
+    h.timers.filter((x) => x.ms === 3000).at(-1)!.fn();
+    assert.ok(!h.logs.some(([e]) => e === 'false_claim_corrected'), 'the booking went through: no «هنوز ثبت نشده»');
+  });
 
   it('times said before check_availability ever answered are corrected (the AI made them up); after a real check they are fine', async () => {
     const h = harness(OPEN, (list) => list.map((t) => ({ toolCallId: t.id, name: t.name, result: '{"ok":true}' })));
