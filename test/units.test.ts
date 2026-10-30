@@ -239,6 +239,9 @@ describe('the booking steps in the prompt', () => {
     assert.ok(prompt.includes('A move is reschedule_appointment, never book_appointment'));
     assert.ok(prompt.includes('Its own day is not the new day'), 'a move asks the new day first');
     assert.ok(prompt.includes('A move asks no name and no WhatsApp question'));
+    assert.ok(prompt.includes('«نه صبح», «نه شب» and «ساعت نه» are always'), 'nine in the morning is a time');
+    assert.ok(prompt.includes('never say «متوجه نشدم» to it'), 'a request to repeat is answered by repeating');
+    assert.ok(prompt.includes('«اولین وقت خالی»'), 'the soonest, in Persian');
     assert.ok(prompt.includes('the day after Friday,\n  October 30 is Saturday, October 31'));
   });
 });
