@@ -246,7 +246,7 @@ describe('the booking steps in the prompt', () => {
     assert.ok(prompt.includes("The caller's own name is never a staff member"), 'a caller called Alireza does not book with staff Alireza');
     assert.ok(prompt.includes('the next thing you say is the read-back'), 'no «این وقت مناسبه؟» before the read-back');
     assert.ok(prompt.includes('with earliest_time set to that time'), 'a time not offered is checked, never swapped (9:30 is never 9:00)');
-    assert.ok(!prompt.includes('21 days ago') && prompt.includes('never a number of days of your own'), 'no example number the AI can copy');
+    assert.ok(!/days ago|hace \S+ días/.test(prompt) && prompt.includes('never say anything about a last visit'), 'no example visit sentence the AI can copy (it said «518 days ago» with no note)');
     assert.ok(prompt.includes('A caller who asks for a language'), '"Please speak English" is a choice, kept for the next calls');
     assert.ok(prompt.includes('With more than three appointments, do not read them all'));
     assert.ok(prompt.includes("A move's read-back names both"), 'the caller hears which appointment moves');
