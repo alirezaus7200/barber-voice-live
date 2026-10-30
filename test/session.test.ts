@@ -622,6 +622,32 @@ describe('a call', () => {
     assert.equal((await tool('r2', 'reschedule_appointment', { appointment_id: 'appt-1', new_start_iso: slots[1].start_iso })).ok, true);
   });
 
+  it('a read-back and the booking in one breath is held each time (twice a call), even after an earlier hold', async () => {
+    const slots = [{ start_iso: '2026-11-02T19:00:00.000Z', local_time: '14:00', spoken: 'ساعت دو بعد از ظهر' }];
+    const h = harness(OPEN, (list) => list.map((t) => ({ toolCallId: t.id, name: t.name,
+      result: JSON.stringify(t.name === 'check_availability' ? { ok: true, day_spoken: 'دوشنبه دوم نوامبر', slots } : { ok: true }) })));
+    await h.s.start('MZ1', ids);
+    h.gem().onOpen();
+    await h.gem().onMessage(JSON.stringify({ setupComplete: {} }));
+    await heard(h);
+    const tool = async (id: string, name: string, args: unknown = {}) => {
+      await h.gem().onMessage(JSON.stringify({ toolCall: { functionCalls: [{ id, name, args }] } }));
+      await new Promise((r) => setImmediate(r));
+      return h.sentToGemini.at(-1).toolResponse.functionResponses[0].response;
+    };
+    const said = (text: string) => h.gem().onMessage(JSON.stringify({ serverContent: { outputTranscription: { text } } }));
+    const over = () => h.gem().onMessage(JSON.stringify({ serverContent: { turnComplete: true } }));
+    await tool('c1', 'check_availability');
+    await said('اصلاح مو با عرفان دوشنبه دوم نوامبر ساعت دو بعد از ظهر، درسته؟');
+    assert.match((await tool('b1', 'book_appointment', { start_iso: slots[0].start_iso })).hint, /same breath/);
+    await over();
+    await said('بسیار خب. دوشنبه دوم نوامبر ساعت دو بعد از ظهر، درسته؟');
+    assert.match((await tool('b2', 'book_appointment', { start_iso: slots[0].start_iso })).hint, /same breath/, 'held again: the caller has not said yes');
+    await over();
+    await said('بله؟'); await over(); // the caller's yes, then the booking in its own turn
+    assert.equal((await tool('b3', 'book_appointment', { start_iso: slots[0].start_iso })).ok, true);
+  });
+
   it('cancel_appointment only after a question about that one appointment: the list of the caller\'s appointments is not it (once)', async () => {
     const appts = [{ appointment_id: 'a1', local_time: '09:00' }, { appointment_id: 'a2', local_time: '14:30' }];
     const sent: string[] = [];

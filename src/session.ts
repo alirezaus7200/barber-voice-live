@@ -119,6 +119,7 @@ export class CallSession {
   private lastTurns: string[] = []; // the AI's last finished turns, as text
   private slotWords = new Map<string, string[]>(); // a free time (start_iso) as check_availability said it
   private readBackRefused = 0;
+  private noWaitRefused = 0; // read back and booked in the same turn, without waiting for the yes
   private notOfferedRefused = 0;
   private slotDays = new Map<string, string[]>(); // the day of each offered time, as check_availability said it
   private knownIds = new Set<string>(); // every id this call was given (the salon's facts, tool answers)
@@ -779,12 +780,19 @@ export class CallSession {
         this.log('time_not_offered', {});
         continue;
       }
+      // the read-back is in this very turn: the AI did not wait for the answer («…درسته؟» and the tool at once). Held
+      // each time (twice a call), not only the first: the times test booked «…درسته؟ ثبت شد» in one breath
+      if (typeof start === 'string' && this.noWaitRefused < 2 && /[?؟]/.test(this.turnText) && this.readBackIn(start, this.turnText)) {
+        held.add(c.id);
+        noWait.add(c.id);
+        this.noWaitRefused += 1;
+        this.log('read_back_missing', { same_turn: true });
+        continue;
+      }
       if (this.readBackRefused >= 1 || this.readBackDone(start)) continue;
       held.add(c.id);
       this.readBackRefused += 1;
-      // the read-back is in this very turn: the AI did not wait for the answer (the move test: «…درسته؟» and the tool)
-      if (typeof start === 'string' && /[?؟]/.test(this.turnText) && this.readBackIn(start, this.turnText)) noWait.add(c.id);
-      this.log('read_back_missing', noWait.has(c.id) ? { same_turn: true } : {});
+      this.log('read_back_missing', {});
     }
     for (const c of calls) this.fixIds(c);
     const forCore = calls.filter((c) => CORE_TOOL_NAMES.has(c.name) && !held.has(c.id));
