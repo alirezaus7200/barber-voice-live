@@ -120,6 +120,7 @@ export class CallSession {
   private slotWords = new Map<string, string[]>(); // a free time (start_iso) as check_availability said it
   private readBackRefused = 0;
   private notOfferedRefused = 0;
+  private slotDays = new Map<string, string[]>(); // the day of each offered time, as check_availability said it
   private knownIds = new Set<string>(); // every id this call was given (the salon's facts, tool answers)
   private readBackFor = new Set<number>(); // times the AI already read back with a question (an earlier turn counts too)
   private bookAfterListRefused = 0;
@@ -274,7 +275,9 @@ export class CallSession {
       // off, or never answered): count again, so the line is never silent for good
       // nor while Gemini is still answering a turn the caller just finished (it once took 13 s for «نوبت», and
       // the re-ask in between came out as an extra "Which day?" in the opening's language)
-      const answering = this.callerAt > this.lastAiAudioAt && now - this.callerAt < REPLY_GRACE_MS;
+      // (only when Gemini wrote down some of the caller's words: with none it did not hear them, and waiting longer
+      // left a caller in silence for 22 s)
+      const answering = this.heardChars > 0 && this.callerAt > this.lastAiAudioAt && now - this.callerAt < REPLY_GRACE_MS;
       if (!this.aiWaitingSince && !this.toolsRunning && !this.hangUpWhenSaid && !answering
           && now - this.lastAiAudioAt > WAIT_RESTART_MS && now - this.lastLoudAt > CALLER_PAUSE_MS) {
         this.aiWaitingSince = now;
@@ -456,9 +459,12 @@ export class CallSession {
   }
 
   /** How each offered time was said (the tool's words, and the usual shorter forms), to find it in the read-back. */
-  private rememberSlots(slots: any[]) {
+  private rememberSlots(slots: any[], days: unknown[] = []) {
+    // the day as check_availability said it, and its first word (the weekday): a read-back names the day too
+    const day = days.filter((d): d is string => typeof d === 'string' && d.trim() !== '').flatMap((d) => [d.trim(), d.trim().split(/[\s,،]+/)[0]]);
     for (const s of slots) {
       if (typeof s?.start_iso !== 'string') continue;
+      if (day.length) this.slotDays.set(s.start_iso, [...new Set(day.filter((w) => w.length > 1))]);
       const said = [s.spoken, s.spoken_en, s.spoken_es, s.local_time].filter((w): w is string => typeof w === 'string' && w.trim() !== '');
       const short = said.flatMap((w) => [w.replace(/^ساعت\s*/, ''), w.replace(/^las\s*/, ''), w.replace(':00 ', ' ')]);
       this.slotWords.set(s.start_iso, [...new Set([...said, ...short].map((w) => w.trim()).filter((w) => w.length > 1))]);
@@ -522,6 +528,10 @@ export class CallSession {
     const words = this.slotWords.get(key);
     if (!words?.length) return true; // a time this call did not offer (nothing to compare): the database still checks it
     if (!/[?؟]/.test(last) || !words.some((w) => last.includes(w))) return false;
+    // «ساعت نه و نیم صبح؟» alone is a question about the time, not the read-back: it names the day too (the caller's
+    // «خالیه» to it was taken as a yes and booked)
+    const days = this.slotDays.get(key);
+    if (days?.length && !days.some((d) => last.includes(d))) return false;
     // the offer itself («…نه و نیم صبح، دو بعد از ظهر یا شش و نیم عصر… کدوم؟») has the chosen time and a question
     // too: a read-back names only the chosen time, never another one that was offered
     const others = [...this.slotWords.entries()].filter(([iso]) => iso !== key).map(([, w]) => w[0])
@@ -726,6 +736,15 @@ export class CallSession {
       if (this.apptAlias.has(id)) args.appointment_id = this.apptAlias.get(id);
       else if (this.apptAlias.size === 1) { args.appointment_id = [...this.apptAlias.values()][0]; this.log('appointment_id_guessed', {}); }
       c.args = args;
+      // no find_my_appointments in this call yet: any id is made up (the AI moved a booking it had just made with an
+      // id it invented, and got not_found)
+      if (!this.apptAlias.size && this.badIdTold < 2) {
+        this.badIdTold += 1;
+        this.log('appointment_id_unknown', { before_find: true });
+        badId.set(c.id, { ok: false, reason: 'find_first',
+          hint: 'Not done yet: call find_my_appointments first, then use an appointment_id exactly as it gives it. Say nothing about it to the caller.' });
+        continue;
+      }
       if (this.apptAlias.size && ![...this.apptAlias.values()].includes(args.appointment_id) && this.badIdTold < 2) {
         this.badIdTold += 1;
         this.log('appointment_id_unknown', {});
@@ -839,9 +858,11 @@ export class CallSession {
       // every time it gave: that day's, the next free day's and other staff members' (the move test offered only the
       // next day's times, so none were remembered and its booking went through with no read-back)
       if (c.name === 'check_availability' && result?.ok === true) {
+        const next = result.next_day_with_openings;
         this.rememberSlots([...(Array.isArray(result.slots) ? result.slots : []),
-          ...(Array.isArray(result.next_day_with_openings?.slots) ? result.next_day_with_openings.slots : []),
-          ...(Array.isArray(result.other_barbers) ? result.other_barbers.flatMap((b: any) => (Array.isArray(b?.slots) ? b.slots : [])) : [])]);
+          ...(Array.isArray(result.other_barbers) ? result.other_barbers.flatMap((b: any) => (Array.isArray(b?.slots) ? b.slots : [])) : [])],
+          [result.day_spoken]);
+        if (Array.isArray(next?.slots)) this.rememberSlots(next.slots, [next.spoken, next.spoken_en, next.spoken_es]);
       }
       if (c.name === 'find_my_appointments' && result?.ok === true && Array.isArray(result.appointments)) {
         this.apptCount = result.appointments.length;

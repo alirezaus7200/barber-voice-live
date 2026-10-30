@@ -228,10 +228,29 @@ describe('a call', () => {
     for (let i = 0; i < 15; i++) { clock.t += 20; h.s.fromCaller(loud); } // «نوبت»
     for (let i = 0; i < 40; i++) { clock.t += 20; h.s.fromCaller(silent); } // the turn ends
     assert.ok(h.sentToGemini.some((m) => m.realtimeInput?.activityEnd));
+    await h.gem().onMessage(JSON.stringify({ serverContent: { inputTranscription: { text: ' نوبت' } } })); // Gemini heard it
     for (let i = 0; i < 13; i++) { clock.t += 1000; h.s.fromCaller(silent); } // Gemini thinks for 13 s
     assert.ok(!h.logs.some(([e]) => e === 'wait_restarted' || e === 'reask'), 'Gemini is still answering: no re-ask over it');
     for (let i = 0; i < 20; i++) { clock.t += 1000; h.s.fromCaller(silent); } // it never answers
     assert.ok(h.logs.some(([e]) => e === 'wait_restarted'), 'the line is never silent for good');
+  });
+
+  it('our own turns: a turn Gemini wrote nothing of is not waited on: the count starts as usual', async () => {
+    const clock = { t: Date.parse('2026-10-22T15:00:00Z') };
+    const h = harness(OPEN, () => [], clock);
+    (h.s as any).deps.ourTurns = true;
+    await h.s.start('MZ1', ids);
+    h.gem().onOpen();
+    await h.gem().onMessage(JSON.stringify({ setupComplete: {} }));
+    await heard(h);
+    await talked(h);
+    clock.t += 3000;
+    const silent = Buffer.alloc(160, 0xff).toString('base64');
+    const loud = Buffer.alloc(160, 0x00).toString('base64');
+    for (let i = 0; i < 15; i++) { clock.t += 20; h.s.fromCaller(loud); } // «دوشنبه», not heard by Gemini
+    for (let i = 0; i < 40; i++) { clock.t += 20; h.s.fromCaller(silent); }
+    for (let i = 0; i < 13; i++) { clock.t += 1000; h.s.fromCaller(silent); }
+    assert.ok(h.logs.some(([e]) => e === 'wait_restarted'), 'not left in silence for 22 s');
   });
 
   it('our own turns: while the AI\'s words still play at the caller only a louder voice starts one (its echo does not cut it off); then a normal one does', async () => {
@@ -565,6 +584,42 @@ describe('a call', () => {
     assert.ok(h.logs.some(([e]) => e === 'id_corrected'));
     await tool('c2', 'check_availability', { staff_id: ERFAN, service_ids: ['00000000-0000-4000-8000-000000000021'], date: '2026-10-31' });
     assert.deepEqual(sentArgs.at(-1).service_ids, ['00000000-0000-4000-8000-000000000021'], 'far from every known id: sent as it is (barber-core says unknown_service)');
+  });
+
+  it('«ساعت نه و نیم صبح؟» alone is not the read-back (it names no day); a move before find_my_appointments is told to find first', async () => {
+    const slots = [{ start_iso: '2026-11-02T14:30:00.000Z', local_time: '09:30', spoken: 'ساعت نه و نیم صبح' },
+      { start_iso: '2026-11-02T19:00:00.000Z', local_time: '14:00', spoken: 'ساعت دو بعد از ظهر' }];
+    const sent: string[] = [];
+    const h = harness(OPEN, (list) => list.map((t) => {
+      sent.push(t.name);
+      const result = t.name === 'check_availability' ? { ok: true, day_spoken: 'دوشنبه دوم نوامبر', slots }
+        : t.name === 'find_my_appointments' ? { ok: true, appointments: [{ appointment_id: 'a1', local_date: '2026-11-02', local_time: '09:30' }] } : { ok: true };
+      return { toolCallId: t.id, name: t.name, result: JSON.stringify(result) };
+    }));
+    await h.s.start('MZ1', ids);
+    h.gem().onOpen();
+    await h.gem().onMessage(JSON.stringify({ setupComplete: {} }));
+    await heard(h);
+    const tool = async (id: string, name: string, args: unknown = {}) => {
+      await h.gem().onMessage(JSON.stringify({ toolCall: { functionCalls: [{ id, name, args }] } }));
+      await new Promise((r) => setImmediate(r));
+      return h.sentToGemini.at(-1).toolResponse.functionResponses[0].response;
+    };
+    const turn = async (text: string) => {
+      await h.gem().onMessage(JSON.stringify({ serverContent: { outputTranscription: { text } } }));
+      await h.gem().onMessage(JSON.stringify({ serverContent: { turnComplete: true } }));
+    };
+    await tool('c1', 'check_availability');
+    await turn('ساعت نه و نیم صبح؟');
+    assert.equal((await tool('b1', 'book_appointment', { start_iso: slots[0].start_iso })).reason, 'read_back_first', 'a question about the time, not the read-back');
+    await turn('اصلاح مو با عرفان، دوشنبه دوم نوامبر ساعت نه و نیم صبح، درسته؟');
+    assert.equal((await tool('b2', 'book_appointment', { start_iso: slots[0].start_iso })).ok, true);
+    const made = await tool('r1', 'reschedule_appointment', { appointment_id: 'd5f7b8c2-2c67-4e6c-a634-862ae51a141c', new_start_iso: slots[1].start_iso });
+    assert.equal(made.reason, 'find_first', 'no appointment was found in this call: the id is made up');
+    assert.ok(!sent.includes('reschedule_appointment'));
+    await tool('f1', 'find_my_appointments');
+    await turn('نوبتتون رو به دوشنبه دوم نوامبر ساعت دو بعد از ظهر جابجا کنم؟');
+    assert.equal((await tool('r2', 'reschedule_appointment', { appointment_id: 'appt-1', new_start_iso: slots[1].start_iso })).ok, true);
   });
 
   it('cancel_appointment only after a question about that one appointment: the list of the caller\'s appointments is not it (once)', async () => {
