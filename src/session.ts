@@ -87,7 +87,7 @@ const SILENCE_NUDGE = (lang: string) => `The caller has not answered at all. Tha
 const NOTE_EVENTS = new Set(['reask', 'silence_nudge', 'time_nudge', 'false_claim_corrected', 'unchecked_times_corrected',
   'end_call_refused', 'language_locked', 'gemini_retry', 'gemini_go_away', 'core_tools_failed', 'tool_unknown',
   'tool_before_opening', 'opening_again', 'twilio_update_failed', 'call_ended', 'gemini_setup', 'repeat_muted',
-  'cancel_confirm_missing', 'read_back_missing', 'appointment_id_unknown', 'appointment_id_guessed', 'id_corrected',
+  'cancel_confirm_missing', 'read_back_missing', 'appointment_id_unknown', 'appointment_id_guessed', 'id_corrected', 'language_guess_refused',
   // the timings, so a long pause in a call can be explained from its text: barber-core's tools, Gemini's answer,
   // the silence count starting again, a nudge Gemini did not answer
   'tool_timing', 'gemini_reply', 'wait_restarted', 'nudge_unanswered']);
@@ -114,6 +114,7 @@ export class CallSession {
   private turnText = ''; // what the AI said in this turn (output transcription)
   private claimText = ''; // this turn's words since the last false claim was corrected
   private turnTool = false; // the AI asked for a tool in this turn
+  private langGuessRefused = 0;
   private lockedLanguage: string | null = null; // the caller's language, once set_caller_language fixed it
   private muteRestOfTurn = false; // the AI asked its question, then set the language: the rest of this turn is its repeat
   private lastTurns: string[] = []; // the AI's last finished turns, as text
@@ -414,6 +415,18 @@ export class CallSession {
 
   /** The caller's language, fixed by barber-core (set_caller_language): told to Gemini in the tool's answer. */
   /** The call's language by name: the one the caller was heard in, else the salon's own (the opening's). */
+  /** Letters the caller said since the AI last spoke (noise marks like <noise> left out); null when no caller line came
+   *  at all (the words may just not have been written down). */
+  private callerLetters(): number | null {
+    let n = 0, lines = 0;
+    for (let i = this.transcript.length - 1; i >= 0; i--) {
+      const l = this.transcript[i];
+      if (l.speaker === 'ai') break;
+      if (l.speaker === 'caller') { lines += 1; n += (l.body.replace(/<[a-z_]+>/gi, '').match(/\p{L}/gu) ?? []).length; }
+    }
+    return lines ? n : null;
+  }
+
   private callLanguageName(): string {
     const code = this.lockedLanguage ?? String(this.variables.default_language ?? 'en');
     return LANGUAGE_NAMES[code.split('-')[0]] ?? code;
@@ -833,6 +846,20 @@ export class CallSession {
       this.log('read_back_missing', {});
     }
     for (const c of calls) this.fixIds(c);
+    // a language switch with nothing heard but noise is a guess (it switched an English call to Persian from «<noise>»
+    // and the caller's name): it stays in the call's language and asks again
+    const guessed = new Set<string>();
+    for (const c of calls) {
+      if (c.name !== 'set_caller_language' || this.langGuessRefused >= 2) continue;
+      const asked = String((c.args as any)?.language ?? '').split('-')[0];
+      const current = String(this.lockedLanguage ?? this.variables.default_language ?? 'en').split('-')[0];
+      const heard = this.callerLetters();
+      if (!asked || asked === current || heard === null || heard >= 2) continue;
+      this.langGuessRefused += 1;
+      held.add(c.id);
+      guessed.add(c.id);
+      this.log('language_guess_refused', { asked });
+    }
     const forCore = calls.filter((c) => CORE_TOOL_NAMES.has(c.name) && !held.has(c.id));
     let results: { toolCallId: string; result: string }[] = [];
     if (forCore.length) {
@@ -846,6 +873,13 @@ export class CallSession {
       }
     }
     for (const c of calls) {
+      if (guessed.has(c.id)) {
+        this.line('tool', `${c.name} → held: no words heard yet`);
+        const name = this.callLanguageName();
+        responses.push({ id: c.id, name: c.name, response: { ok: false, reason: 'no_words_heard',
+          hint: `You have not heard the caller's words yet, only noise: never pick a language from noise or the caller's name. Stay in ${name} and ask once, short, in ${name}, to say it again.` } });
+        continue;
+      }
       if (badId.has(c.id)) {
         this.line('tool', `${c.name} → held: unknown appointment id`);
         responses.push({ id: c.id, name: c.name, response: badId.get(c.id) });

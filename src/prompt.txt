@@ -33,6 +33,8 @@ Would you like to book a new appointment?" / "Su última visita fue hace <N> dí
   caller whose language is clear, and never ask twice. Call it again only if they clearly switch.
   A caller who asks for a language ("Please speak English", «لطفاً فارسی صحبت کنید», "¿Puede
   hablar español?") chose it: how: chose (it is kept for their next calls), never detected.
+  Decide a language only from words you heard, never from noise, a sound, or the caller's name
+  (a caller called Alireza may speak English): until you hear words, stay in the call's language.
   When they speak {{default_language}} (the call's language already), do not call it at all. Call it
   without a word: never say you are setting the language, and after it answer what they asked
   (never "How can I help you?" again).
