@@ -111,6 +111,7 @@ export class CallSession {
   private slotWords = new Map<string, string[]>(); // a free time (start_iso) as check_availability said it
   private readBackRefused = 0;
   private notOfferedRefused = 0;
+  private bookAfterListRefused = 0;
   private listingPending = false; // find_my_appointments answered: the AI's turn now lists them
   private listText = ''; // that turn's words (the list, not the confirmation)
   private apptCount = 0;
@@ -457,6 +458,12 @@ export class CallSession {
     return last !== this.listText || this.apptCount === 1;
   }
 
+  /** A booking after find_my_appointments: a move is reschedule_appointment (it frees the old time). */
+  private moveNotBookHint(): string {
+    const list = [...this.apptIds].map(([i, t]) => `${i} (${t})`).join(', ');
+    return `Not booked yet. The caller already has ${list}. If they want to move one, call reschedule_appointment with its appointment_id and this time as new_start_iso, and tell them it was moved: book_appointment would keep the old one too. Call book_appointment again only if they clearly want one more appointment besides it.`;
+  }
+
   /** check_availability gave this start in this call (the same instant, however it is written). */
   private offered(start: unknown): boolean {
     const t = typeof start === 'string' ? Date.parse(start) : NaN;
@@ -639,6 +646,7 @@ export class CallSession {
     // a booking with no read-back before it is not sent: the AI reads back first (once a call)
     const held = new Set<string>();
     const notOffered = new Set<string>(); // held because check_availability never gave that time
+    const moveNotBook = new Set<string>(); // a new booking while the caller's appointments are on the table
     // an appointment id the AI made up (not one find_my_appointments gave): it is told the real ones, never sent
     const badId = new Map<string, unknown>();
     for (const c of calls) {
@@ -667,6 +675,15 @@ export class CallSession {
       }
       const start = c.name === 'book_appointment' ? args?.start_iso : c.name === 'reschedule_appointment' ? args?.new_start_iso : undefined;
       if (start === undefined) continue;
+      // the caller asked about their appointments and the AI books a new one: a move done as a booking leaves the
+      // old appointment too (the move test booked Sunday 9 AM and kept Friday 6:30 PM)
+      if (c.name === 'book_appointment' && this.apptAlias.size && this.bookAfterListRefused < 1) {
+        held.add(c.id);
+        moveNotBook.add(c.id);
+        this.bookAfterListRefused += 1;
+        this.log('book_after_appointments', {});
+        continue;
+      }
       if (this.notOfferedRefused < 1 && !this.offered(start)) {
         held.add(c.id);
         notOffered.add(c.id);
@@ -699,9 +716,11 @@ export class CallSession {
       }
       if (held.has(c.id)) {
         const cancel = c.name === 'cancel_appointment';
-        const why = notOffered.has(c.id) ? 'time not offered' : cancel ? 'confirm first' : 'read back first';
+        const why = moveNotBook.has(c.id) ? 'move, not a new booking?' : notOffered.has(c.id) ? 'time not offered' : cancel ? 'confirm first' : 'read back first';
         this.line('tool', `${c.name} → held: ${why}`);
-        responses.push({ id: c.id, name: c.name, response: notOffered.has(c.id)
+        responses.push({ id: c.id, name: c.name, response: moveNotBook.has(c.id)
+          ? { ok: false, reason: 'move_not_book', hint: this.moveNotBookHint() }
+          : notOffered.has(c.id)
           ? { ok: false, reason: 'time_not_offered', hint: NOT_OFFERED }
           : cancel
           ? { ok: false, reason: 'confirm_first', hint: CONFIRM_CANCEL }
