@@ -826,12 +826,12 @@ describe('a call', () => {
     h.gem().onOpen();
     await h.gem().onMessage(JSON.stringify({ setupComplete: {} }));
     await heard(h);
-    (h.gem() as any).onClose(1011, 'Internal error encountered.');
+    (h.gem() as any).onClose(1008, 'Policy violation.'); // a close that is not opened again (1006, 1007 and 1011 are)
     await new Promise((r) => setImmediate(r));
     await h.s.finish();
     const report = h.core.filter((c: any) => c[0] === 'end').at(-1)[1];
     assert.equal(report.endedReason, 'gemini-closed');
-    assert.ok(report.transcript.some((l: any) => l.speaker === 'system' && l.body === 'gemini_closed {"code":1011,"reason":"Internal error encountered."}'));
+    assert.ok(report.transcript.some((l: any) => l.speaker === 'system' && l.body === 'gemini_closed {"code":1008,"reason":"Policy violation."}'));
   });
 
   it('the opening audio is asked from barber-core with the voice; stored audio plays without text-to-speech; new audio is kept there', async () => {
@@ -1162,7 +1162,7 @@ describe('a call', () => {
     assert.match(note, /You: برای چه روزی می‌خواید؟/);
     assert.match(note, /never greet again/);
     assert.ok(h.logs.some(([e, d]) => e === 'gemini_retry' && d.reason === 'closed mid-call'));
-    h.sockets[1].onClose(1007);
+    h.sockets[1].onClose(1011, 'Internal error occurred.'); // Gemini's own error: the same
     assert.equal(h.sockets.length, 3, 'once more');
     h.sockets[2].onClose(1007);
     await new Promise((r) => setImmediate(r));
