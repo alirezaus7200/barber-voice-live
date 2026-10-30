@@ -1140,6 +1140,35 @@ describe('a call', () => {
     assert.equal(openings.length, 2, 'the opening is said again on the new session');
   });
 
+  it('Gemini closes mid-call (1007): a new session with the full setting and the conversation so far, no new greeting (twice a call)', async () => {
+    const h = harness(OPEN, (list) => list.map((t) => ({ toolCallId: t.id, name: t.name, result: '{"ok":true,"language":"fa-IR"}' })));
+    await h.s.start('MZ1', ids);
+    h.gem().onOpen();
+    await h.gem().onMessage(JSON.stringify({ setupComplete: {} }));
+    await heard(h);
+    await h.gem().onMessage(JSON.stringify({ serverContent: { inputTranscription: { text: 'یه appointment می‌خواستم' } } }));
+    await h.gem().onMessage(JSON.stringify({ serverContent: { outputTranscription: { text: 'برای چه روزی می‌خواید؟' } } }));
+    await h.gem().onMessage(JSON.stringify({ serverContent: { turnComplete: true } }));
+    h.sockets[0].onClose(1007, 'The audio content type (CONTENT_TYPE_AUDIO) is not supported for this model configuration.');
+    assert.equal(h.sockets.length, 2, 'a second session');
+    assert.equal(h.updates.length, 0, 'the line stays open');
+    h.sockets[1].onOpen();
+    const setup = h.sentToGemini.filter((m) => m.setup).at(-1).setup;
+    assert.ok(setup.inputAudioTranscription && setup.outputAudioTranscription && setup.realtimeInputConfig, 'the full setting: the call keeps its text');
+    await h.sockets[1].onMessage(JSON.stringify({ setupComplete: {} }));
+    const note = h.sentToGemini.at(-1).clientContent.turns[0].parts[0].text;
+    assert.match(note, /connection was renewed/);
+    assert.match(note, /Caller: یه appointment می‌خواستم/);
+    assert.match(note, /You: برای چه روزی می‌خواید؟/);
+    assert.match(note, /never greet again/);
+    assert.ok(h.logs.some(([e, d]) => e === 'gemini_retry' && d.reason === 'closed mid-call'));
+    h.sockets[1].onClose(1007);
+    assert.equal(h.sockets.length, 3, 'once more');
+    h.sockets[2].onClose(1007);
+    await new Promise((r) => setImmediate(r));
+    assert.equal(h.updates.length, 1, 'a third time ends the call');
+  });
+
   it('a second 1007 in the same call is not retried again: the call ends as before', async () => {
     const h = harness(OPEN);
     await h.s.start('MZ1', ids);

@@ -160,6 +160,8 @@ export class CallSession {
   private refusedEnd = false; // the first early end_call is refused once, so the AI asks again
   private variables: Record<string, unknown> = {};
   private retried = false;
+  private reconnects = 0; // Gemini closed mid-call (1007) and this call opened it again, with what was said
+  private resumeNote = ''; // the conversation so far, for the new session
   private t0 = 0; // when Twilio's start came (ms), for the start-up timings
   private firstAudio = false;
   // The opening (AI disclosure, recording notice) is heard in full: until Twilio confirms it was played,
@@ -244,7 +246,19 @@ export class CallSession {
         if (this.closed) return;
         // Gemini's own close code and reason in the call's text too (1000 normal; 1007 refused; 1011 its own error)
         this.line('system', `gemini_closed ${JSON.stringify({ code: code ?? null, reason: String(reason ?? '').slice(0, 200) })}`);
-        if (code === 1007 && !this.retried) {
+        // mid-call (it had been working): the same full settings again, with the conversation so far. The plain retry
+        // lost the call's text, our turns and the conversation: the dl-mixed test then ran 4 minutes in confusion
+        if (code === 1007 && this.openingHeard && this.reconnects < 2) {
+          this.reconnects += 1;
+          this.ready = false;
+          this.inTurn = false; // a caller's turn half-sent to the old session starts again in the new one
+          this.preroll = [];
+          this.resumeNote = this.conversationSoFar();
+          this.log('gemini_retry', { reason: 'closed mid-call', n: this.reconnects });
+          this.connectGemini(false);
+          return;
+        }
+        if (code === 1007 && !this.retried && !this.openingHeard) {
           this.retried = true;
           this.ready = false;
           if (!this.openingHeard) this.openingSpoken = false;
@@ -421,6 +435,16 @@ export class CallSession {
   }
 
   /** A new line of the call's text (none once the text is long enough). */
+  /** What was said so far (the AI, the caller, the tools' answers), for a session opened again mid-call. */
+  private conversationSoFar(): string {
+    const who: Record<string, string> = { ai: 'You', caller: 'Caller', tool: 'Tool' };
+    const said = this.transcript.filter((l) => l.speaker !== 'system').slice(-40)
+      .map((l) => `${who[l.speaker]}: ${l.body.slice(0, 400)}`).join('\n');
+    return `Note from the phone system: the connection was renewed in the middle of this call; the opening was already said. `
+      + `The conversation so far:\n${said}\nGo on from exactly where it stopped, in the caller's language: never greet again or repeat `
+      + `the opening. If your last question was not answered, ask it once, short; otherwise wait for the caller.`;
+  }
+
   private line(speaker: TranscriptLine['speaker'], body: string): TranscriptLine | null {
     const text = body.slice(0, 2000); // pieces keep their spaces; the report trims each line
     if (!text.trim() || this.transcriptChars + text.length > TRANSCRIPT_MAX_CHARS || this.transcript.length >= 2000) return null;
@@ -609,6 +633,12 @@ export class CallSession {
       this.step('gemini_ready');
       this.ready = true;
       if (!this.openingHeard) void this.startOpening();
+      else if (this.resumeNote) {
+        // a new session mid-call: it knows what was said and goes on, no new greeting
+        const note = this.resumeNote;
+        this.resumeNote = '';
+        this.gemini?.send(JSON.stringify({ clientContent: { turns: [{ role: 'user', parts: [{ text: note }] }], turnComplete: true } }));
+      }
     }
     const said = m.serverContent?.outputTranscription?.text;
     if (typeof said === 'string' && said && !this.muteRestOfTurn) { this.checkClaim(said); this.words('ai', said); if (/[?؟]/.test(said)) this.askedAt = this.deps.now().getTime(); }
