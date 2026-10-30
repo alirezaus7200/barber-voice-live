@@ -483,6 +483,39 @@ describe('a call', () => {
     assert.deepEqual(sent.filter((n) => n !== 'previous_visit_reminder'), ['find_my_appointments', 'check_availability', 'reschedule_appointment']);
   });
 
+  it('a booking after the caller\'s appointments were found is held once: a move is reschedule_appointment', async () => {
+    const slots = [{ start_iso: '2026-11-01T14:00:00.000Z', local_time: '09:00', spoken: 'ساعت نه صبح' }];
+    const sent: string[] = [];
+    const h = harness(OPEN, (list) => list.map((t) => {
+      sent.push(t.name);
+      const result = t.name === 'check_availability' ? { ok: true, slots }
+        : t.name === 'find_my_appointments' ? { ok: true, appointments: [{ appointment_id: 'a1', local_date: '2026-10-30', local_time: '18:30' }] } : { ok: true };
+      return { toolCallId: t.id, name: t.name, result: JSON.stringify(result) };
+    }));
+    await h.s.start('MZ1', ids);
+    h.gem().onOpen();
+    await h.gem().onMessage(JSON.stringify({ setupComplete: {} }));
+    await heard(h);
+    const tool = async (id: string, name: string, args: unknown = {}) => {
+      await h.gem().onMessage(JSON.stringify({ toolCall: { functionCalls: [{ id, name, args }] } }));
+      await new Promise((r) => setImmediate(r));
+      return h.sentToGemini.at(-1).toolResponse.functionResponses[0].response;
+    };
+    const turn = async (text: string) => {
+      await h.gem().onMessage(JSON.stringify({ serverContent: { outputTranscription: { text } } }));
+      await h.gem().onMessage(JSON.stringify({ serverContent: { turnComplete: true } }));
+    };
+    await tool('f1', 'find_my_appointments');
+    await tool('c1', 'check_availability');
+    await turn('اصلاح مو با عرفان، یکشنبه یکم نوامبر ساعت نه صبح. درسته؟');
+    const held = await tool('b1', 'book_appointment', { start_iso: slots[0].start_iso });
+    assert.equal(held.reason, 'move_not_book');
+    assert.ok(held.hint.includes('appt-1 (2026-10-30 18:30)') && held.hint.includes('reschedule_appointment'));
+    assert.ok(h.logs.some(([e]) => e === 'book_after_appointments'));
+    assert.equal((await tool('r1', 'reschedule_appointment', { appointment_id: 'appt-1', new_start_iso: slots[0].start_iso })).ok, true);
+    assert.deepEqual(sent.filter((n) => n !== 'previous_visit_reminder'), ['find_my_appointments', 'check_availability', 'reschedule_appointment'], 'the booking never reached barber-core');
+  });
+
   it('cancel_appointment only after a question about that one appointment: the list of the caller\'s appointments is not it (once)', async () => {
     const appts = [{ appointment_id: 'a1', local_time: '09:00' }, { appointment_id: 'a2', local_time: '14:30' }];
     const sent: string[] = [];
