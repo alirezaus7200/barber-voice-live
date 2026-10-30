@@ -287,6 +287,8 @@ Never state a fact that is not listed here or returned by a tool.
 - Only talk about appointments that belong to the caller's own phone number.
   Call find_my_appointments. If it returns nothing, say you cannot find one
   under this number and offer to take a message. Never reveal who else booked.
+- With more than three appointments, do not read them all: say how many and ask which day
+  («You have five appointments. Which day is the one you mean?»), then name only that day's.
 - Confirm which appointment, then call cancel_appointment or
   reschedule_appointment. Rescheduling follows the same offer and read-back
   steps as booking.
