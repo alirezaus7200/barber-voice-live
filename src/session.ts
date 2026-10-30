@@ -177,6 +177,8 @@ export class CallSession {
   private refusedEnd = false; // the first early end_call is refused once, so the AI asks again
   private variables: Record<string, unknown> = {};
   private retried = false;
+  private geminiGen = 0;
+  private nudgeAt = 0; // when the last re-ask or silence note went to Gemini
   private reconnects = 0; // Gemini closed mid-call (1007) and this call opened it again, with what was said
   private resumeNote = ''; // the conversation so far, for the new session
   private t0 = 0; // when Twilio's start came (ms), for the start-up timings
@@ -245,6 +247,7 @@ export class CallSession {
     // which hearing settings this call used: in its text, so a test result says which one passed
     this.ourTurns = this.deps.ourTurns === true && !plain;
     this.log('gemini_setup', { model: this.deps.model, plain, ...this.deps.activity, ...(this.ourTurns ? { turns: 'ours' } : {}) });
+    const gen = ++this.geminiGen; // a session replaced by a new one is ignored from then on (its messages and its close)
     this.gemini = this.deps.openGemini({
       onOpen: () => this.gemini?.send(JSON.stringify({
         setup: {
@@ -258,9 +261,9 @@ export class CallSession {
           tools: geminiTools(),
         },
       })),
-      onMessage: (text) => void this.fromGemini(text),
+      onMessage: (text) => { if (gen === this.geminiGen) void this.fromGemini(text); },
       onClose: (code, reason) => {
-        if (this.closed) return;
+        if (this.closed || gen !== this.geminiGen) return;
         // Gemini's own close code and reason in the call's text too (1000 normal; 1007 refused; 1011 its own error)
         this.line('system', `gemini_closed ${JSON.stringify({ code: code ?? null, reason: String(reason ?? '').slice(0, 200) })}`);
         // mid-call (it had been working): the same full settings again, with the conversation so far. The plain retry
@@ -323,20 +326,24 @@ export class CallSession {
         this.aiWaitingSince = 0;
         this.lastLoudAt = now;
       } else if (this.aiWaitingSince && now - this.aiWaitingSince > REASK_MS && this.reasks < this.maxReasks() && !this.hangUpWhenSaid) {
+        if (this.unresponsive() && this.restartGemini('unresponsive')) return;
         this.reasks += 1;
         if (this.nudgePending) this.log('nudge_unanswered', {}); // Gemini said nothing to the last one
         // still counting: if Gemini says nothing to this either, the next step still comes (never a silent line)
         this.aiWaitingSince = now;
         this.nudgePending = true;
+        this.nudgeAt = now;
         // loudMsAgo: how long ago the line was last loud (the caller may have answered and Gemini missed it)
         this.log('reask', { n: this.reasks, loudMsAgo: this.lastLoudAt ? Math.min(now - this.lastLoudAt, 99999) : -1, callerPeak: this.callerPeak, heardChars: this.heardChars, ...(this.ourTurns ? { turnsSent: this.turnsSent } : {}) });
         this.gemini.send(JSON.stringify({ clientContent: { turns: [{ role: 'user', parts: [{ text: this.reasks === 1 ? REASK(this.callLanguageName()) : REASK_OFFER(this.callLanguageName()) }] }], turnComplete: true } }));
       } else if (this.aiWaitingSince && this.reasks >= this.maxReasks() && !this.nudged
                  && now - this.aiWaitingSince > (this.talked ? SILENCE_NUDGE_MS : FIRST_SILENCE_NUDGE_MS)) {
+        if (this.unresponsive() && this.restartGemini('unresponsive')) return;
         this.nudged = true;
         this.log('silence_nudge', { silentSeconds: Math.round((now - this.aiWaitingSince) / 1000), callerPeak: this.callerPeak, heardChars: this.heardChars });
         this.aiWaitingSince = 0;
         this.nudgePending = true;
+        this.nudgeAt = now;
         // this goodbye ends the call, whether or not the AI also calls end_call: hang up once it was played
         this.endedReason = 'silence-timed-out';
         this.hangUpWhenSaid = true;
@@ -465,6 +472,30 @@ export class CallSession {
   }
 
   /** A new line of the call's text (none once the text is long enough). */
+  /** Gemini is stuck: the caller spoke after its last word and it did not answer the server's last nudge either (the
+   *  English move test: the caller spoke, Gemini said nothing to them, to the re-ask or to the goodbye note). */
+  private unresponsive(): boolean {
+    return this.nudgePending && this.lastAiAudioAt < this.nudgeAt && this.lastLoudAt > this.lastAiAudioAt && this.openingHeard;
+  }
+
+  /** A new Gemini session in place of a stuck one, with the conversation so far (twice a call, with the 1007 ones). */
+  private restartGemini(reason: string): boolean {
+    if (this.reconnects >= 2 || this.closed) return false;
+    this.reconnects += 1;
+    this.ready = false;
+    this.inTurn = false;
+    this.preroll = [];
+    this.nudgePending = false;
+    this.aiWaitingSince = 0;
+    this.resumeNote = this.conversationSoFar() + ` The caller spoke just now and was not answered: ask them once, short, in ${this.callLanguageName()}, to say it again.`;
+    this.line('system', `gemini_retry ${JSON.stringify({ reason, n: this.reconnects })}`);
+    this.deps.log('gemini_retry', { reason, n: this.reconnects });
+    const old = this.gemini;
+    this.connectGemini(false);
+    old?.close();
+    return true;
+  }
+
   /** What was said so far (the AI, the caller, the tools' answers), for a session opened again mid-call. */
   private conversationSoFar(): string {
     const who: Record<string, string> = { ai: 'You', caller: 'Caller', tool: 'Tool' };

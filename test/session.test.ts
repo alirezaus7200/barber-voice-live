@@ -1075,6 +1075,30 @@ describe('a call', () => {
     assert.equal(said(), 3, 're-ask 2: the noise did not reset the count');
   });
 
+  it('Gemini stuck (the caller spoke, no answer to them or to the re-ask): a new session with the conversation, not the silence goodbye', async () => {
+    const clock = { t: Date.parse('2026-10-22T15:00:00Z') };
+    const h = harness(OPEN, () => [], clock);
+    await h.s.start('MZ1', ids);
+    h.gem().onOpen();
+    await h.gem().onMessage(JSON.stringify({ setupComplete: {} }));
+    await heard(h);
+    await talked(h);
+    const silent = Buffer.alloc(160, 0xff).toString('base64');
+    const loud = Buffer.alloc(160, 0x00).toString('base64');
+    clock.t += 3000;
+    for (let i = 0; i < 20; i++) { clock.t += 50; h.s.fromCaller(loud); } // "I'd like to move my appointment"
+    for (let i = 0; i < 30; i++) { clock.t += 1000; h.s.fromCaller(silent); } // Gemini says nothing, not even to the re-ask
+    assert.ok(h.logs.some(([e]) => e === 'reask'), 'it was asked again first');
+    assert.ok(h.logs.some(([e, d]) => e === 'gemini_retry' && d.reason === 'unresponsive'), 'then a new session');
+    assert.equal(h.sockets.length, 2);
+    assert.ok(!h.logs.some(([e]) => e === 'silence_nudge'), 'no goodbye to a caller who spoke and was not answered');
+    h.sockets[0].onClose(1000); // the old session closing is not the end of the call
+    assert.equal(h.updates.length, 0);
+    h.sockets[1].onOpen();
+    await h.sockets[1].onMessage(JSON.stringify({ setupComplete: {} }));
+    assert.match(h.sentToGemini.at(-1).clientContent.turns[0].parts[0].text, /was not answered: ask them once/);
+  });
+
   it('the caller answered quietly but Gemini heard it (its transcription): no re-ask, so the AI does not repeat its question', async () => {
     const clock = { t: Date.parse('2026-10-22T15:00:00Z') };
     const h = harness(OPEN, () => [], clock);
