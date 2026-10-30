@@ -673,6 +673,27 @@ describe('a call', () => {
     assert.ok(!h.logs.some(([e]) => e === 'read_back_missing'));
   });
 
+  it('a language switch with only noise heard is a guess: held (the call stays in its language); after real words it goes through', async () => {
+    const sent: string[] = [];
+    const h = harness(OPEN, (list) => list.map((t) => { sent.push(t.name); return { toolCallId: t.id, name: t.name, result: '{"ok":true,"language":"fa-IR","saved":false}' }; }));
+    await h.s.start('MZ1', ids);
+    h.gem().onOpen();
+    await h.gem().onMessage(JSON.stringify({ setupComplete: {} }));
+    await heard(h);
+    const tool = async (id: string) => {
+      await h.gem().onMessage(JSON.stringify({ toolCall: { functionCalls: [{ id, name: 'set_caller_language', args: { language: 'fa-IR', how: 'detected' } }] } }));
+      await new Promise((r) => setImmediate(r));
+      return h.sentToGemini.at(-1).toolResponse.functionResponses[0].response;
+    };
+    await h.gem().onMessage(JSON.stringify({ serverContent: { inputTranscription: { text: '<noise>' } } }));
+    const guess = await tool('l1');
+    assert.equal(guess.reason, 'no_words_heard');
+    assert.match(guess.hint, /never pick a language from noise or the caller's name/);
+    assert.ok(!sent.includes('set_caller_language'), 'not sent to barber-core');
+    await h.gem().onMessage(JSON.stringify({ serverContent: { inputTranscription: { text: ' سلام یه نوبت می‌خواستم' } } }));
+    assert.equal((await tool('l2')).ok, true, 'real Persian words: the switch goes through');
+  });
+
   it('cancel_appointment only after a question about that one appointment: the list of the caller\'s appointments is not it (once)', async () => {
     const appts = [{ appointment_id: 'a1', local_time: '09:00' }, { appointment_id: 'a2', local_time: '14:30' }];
     const sent: string[] = [];
