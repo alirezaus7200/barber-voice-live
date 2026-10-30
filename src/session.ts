@@ -43,6 +43,7 @@ const UUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi
 const UUID_ONE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 /** How many characters differ between two ids of the same length. */
 const charsOff = (a: string, b: string) => [...a].reduce((n, ch, i) => n + (ch === b[i] ? 0 : 1), 0);
+const CLAIM_WAIT_MS = 3000; // a "booked" claim is corrected only if no tool made it true by then
 const GOODBYE = /خدانگهدار|خداحافظ|\bgood ?bye\b|\bbye\b|adi[oó]s|hasta (luego|pronto)/i;
 const DONE_CLAIM = /\b(is booked|are booked|you're booked|you are booked|booked you|is all set|has been (booked|cancel+ed|moved|rescheduled)|is cancel+ed|(qued[oó]|est[aá]|ya est[aá]) (reservad[ao]|agendad[ao]|confirmad[ao]|cancelad[ao])|ha sido (reservad[ao]|cancelad[ao]))\b|ثبت شد|رزرو شد|رزرو کردم|ثبت کردم|لغو شد|جابجا شد|انجام شد/i;
 const FALSE_CLAIM = 'Correction: nothing has been booked, cancelled or moved in this call: no tool answered ok. Tell the caller right away, in their language, that it is not done yet. Then read the appointment back, and after their yes call book_appointment (or the tool they need). Never say it is done before the tool answers ok.';
@@ -132,6 +133,7 @@ export class CallSession {
   private callerAt = 0; // when the caller last said something
   private endRefusedForQuestion = 0;
   private falseClaims = 0; // "booked" with no tool ok: corrected (at most twice a call)
+  private claimPending = false; // this turn said "booked": checked once the turn is over (the tool often comes after the words)
   private timesChecked = false; // check_availability (or find_my_appointments) answered ok in this call
   private uncheckedTimes = 0; // times offered before any check: corrected (at most twice a call)
   private lastAiAudioAt = 0;
@@ -528,12 +530,24 @@ export class CallSession {
     this.turnText = (this.turnText + text).slice(-600);
     this.claimText = (this.claimText + text).slice(-600);
     if (this.outcome || this.falseClaims >= 2 || !DONE_CLAIM.test(this.claimText)) return;
-    this.falseClaims++;
     this.claimText = ''; // the turn keeps its words (a read-back in it still counts)
-    this.log('false_claim_corrected', {});
     // the call does not end on it: the next end_call is refused until something really happened
     this.refusedEnd = false;
-    this.gemini?.send(JSON.stringify({ clientContent: { turns: [{ role: 'user', parts: [{ text: FALSE_CLAIM }] }], turnComplete: true } }));
+    this.claimPending = true;
+  }
+
+  /** The turn that said "booked" is over: if no tool made it true (or is still running) a little later, correct it.
+   *  Gemini says «ثبت شد» and calls book_appointment seconds after: correcting at once made it say «هنوز ثبت نشده»
+   *  after the booking had gone through, and book again. */
+  private claimTurnOver() {
+    if (!this.claimPending) return;
+    this.claimPending = false;
+    this.timers.push(this.deps.setTimer(CLAIM_WAIT_MS, () => {
+      if (this.closed || this.outcome || this.toolsRunning || this.falseClaims >= 2) return;
+      this.falseClaims++;
+      this.log('false_claim_corrected', {});
+      this.gemini?.send(JSON.stringify({ clientContent: { turns: [{ role: 'user', parts: [{ text: FALSE_CLAIM }] }], turnComplete: true } }));
+    }));
   }
 
   /** A turn that said times of day before check_availability ever answered (and asked for no tool): they are made up. */
@@ -646,6 +660,7 @@ export class CallSession {
       this.claimText = '';
       this.turnTool = false;
       this.muteRestOfTurn = false;
+      this.claimTurnOver();
       this.turnAudio = false;
       this.nudgePending = false;
       if (!this.hangUpWhenSaid) {
