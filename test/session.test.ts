@@ -523,6 +523,29 @@ describe('a call', () => {
     assert.deepEqual(sent.filter((n) => n !== 'previous_visit_reminder'), ['find_my_appointments', 'check_availability', 'reschedule_appointment'], 'the booking never reached barber-core');
   });
 
+  it('a staff or service id one or two characters off one the call was given is corrected; a far one is left for barber-core', async () => {
+    const CUT = '10b40df1-a1ac-4cf0-a248-403421526739', ERFAN = '43cb848e-e7c6-4899-89f9-ecde11c08d7f';
+    const sentArgs: any[] = [];
+    const h = harness(OPEN, (list) => list.map((t) => {
+      sentArgs.push(t.args);
+      return { toolCallId: t.id, name: t.name, result: JSON.stringify(t.name === 'find_services' ? { ok: true, services: [{ service_id: CUT, staff: [ERFAN] }] } : { ok: true, slots: [] }) };
+    }));
+    await h.s.start('MZ1', ids);
+    h.gem().onOpen();
+    await h.gem().onMessage(JSON.stringify({ setupComplete: {} }));
+    await heard(h);
+    const tool = async (id: string, name: string, args: unknown = {}) => {
+      await h.gem().onMessage(JSON.stringify({ toolCall: { functionCalls: [{ id, name, args }] } }));
+      await new Promise((r) => setImmediate(r));
+    };
+    await tool('f1', 'find_services', { query: 'haircut' });
+    await tool('c1', 'check_availability', { staff_id: ERFAN.replace('43cb', '43cc'), service_ids: ['10b40df0-a1ac-4cf0-a248-403421526739'], date: '2026-10-31' });
+    assert.deepEqual([sentArgs.at(-1).staff_id, sentArgs.at(-1).service_ids], [ERFAN, [CUT]], 'one character off: the real ids');
+    assert.ok(h.logs.some(([e]) => e === 'id_corrected'));
+    await tool('c2', 'check_availability', { staff_id: ERFAN, service_ids: ['00000000-0000-4000-8000-000000000021'], date: '2026-10-31' });
+    assert.deepEqual(sentArgs.at(-1).service_ids, ['00000000-0000-4000-8000-000000000021'], 'far from every known id: sent as it is (barber-core says unknown_service)');
+  });
+
   it('cancel_appointment only after a question about that one appointment: the list of the caller\'s appointments is not it (once)', async () => {
     const appts = [{ appointment_id: 'a1', local_time: '09:00' }, { appointment_id: 'a2', local_time: '14:30' }];
     const sent: string[] = [];

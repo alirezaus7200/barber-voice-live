@@ -39,6 +39,10 @@ const GOODBYE_MAX_MS = 15000; // safety: hang up even if the goodbye never compl
 const TIME_WARNING_S = 40; // seconds before the call cap when the AI is told to wrap up (enough to take a message)
 const TIME_NUDGE = 'About 40 seconds are left in this call. If the caller already chose a time: read it back and, after their yes, call book_appointment now. Never say it is booked unless book_appointment answered ok. If it cannot be finished, ask the caller: shall I connect you to the barber, or take a message for the barber? (Offer to connect them only if the salon is open now; otherwise offer only the message.) Then stop and wait for the answer. If they want a message, take it with take_message, then say a short goodbye in the caller\'s language and call end_call. Never say goodbye in the same turn as a question.';
 // words that say something was booked, cancelled or moved (en, es, fa): never true before a tool said so (hard rule 8)
+const UUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
+const UUID_ONE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+/** How many characters differ between two ids of the same length. */
+const charsOff = (a: string, b: string) => [...a].reduce((n, ch, i) => n + (ch === b[i] ? 0 : 1), 0);
 const GOODBYE = /خدانگهدار|خداحافظ|\bgood ?bye\b|\bbye\b|adi[oó]s|hasta (luego|pronto)/i;
 const DONE_CLAIM = /\b(is booked|are booked|you're booked|you are booked|booked you|is all set|has been (booked|cancel+ed|moved|rescheduled)|is cancel+ed|(qued[oó]|est[aá]|ya est[aá]) (reservad[ao]|agendad[ao]|confirmad[ao]|cancelad[ao])|ha sido (reservad[ao]|cancelad[ao]))\b|ثبت شد|رزرو شد|رزرو کردم|ثبت کردم|لغو شد|جابجا شد|انجام شد/i;
 const FALSE_CLAIM = 'Correction: nothing has been booked, cancelled or moved in this call: no tool answered ok. Tell the caller right away, in their language, that it is not done yet. Then read the appointment back, and after their yes call book_appointment (or the tool they need). Never say it is done before the tool answers ok.';
@@ -81,7 +85,7 @@ const SILENCE_NUDGE = (lang: string) => `The caller has not answered at all. Tha
 const NOTE_EVENTS = new Set(['reask', 'silence_nudge', 'time_nudge', 'false_claim_corrected', 'unchecked_times_corrected',
   'end_call_refused', 'language_locked', 'gemini_retry', 'gemini_go_away', 'core_tools_failed', 'tool_unknown',
   'tool_before_opening', 'opening_again', 'twilio_update_failed', 'call_ended', 'gemini_setup', 'repeat_muted',
-  'cancel_confirm_missing', 'read_back_missing', 'appointment_id_unknown', 'appointment_id_guessed',
+  'cancel_confirm_missing', 'read_back_missing', 'appointment_id_unknown', 'appointment_id_guessed', 'id_corrected',
   // the timings, so a long pause in a call can be explained from its text: barber-core's tools, Gemini's answer,
   // the silence count starting again, a nudge Gemini did not answer
   'tool_timing', 'gemini_reply', 'wait_restarted', 'nudge_unanswered']);
@@ -114,6 +118,7 @@ export class CallSession {
   private slotWords = new Map<string, string[]>(); // a free time (start_iso) as check_availability said it
   private readBackRefused = 0;
   private notOfferedRefused = 0;
+  private knownIds = new Set<string>(); // every id this call was given (the salon's facts, tool answers)
   private readBackFor = new Set<number>(); // times the AI already read back with a question (an earlier turn counts too)
   private bookAfterListRefused = 0;
   private listingPending = false; // find_my_appointments answered: the AI's turn now lists them
@@ -225,7 +230,7 @@ export class CallSession {
           // the plain setting is the retry after Gemini refused the full one (1007)
           // the AI's words as text (outputAudioTranscription): to catch a "booked" or times no tool gave
           ...(plain ? {} : { realtimeInputConfig: { automaticActivityDetection: this.ourTurns ? { disabled: true } : { silenceDurationMs: 600, ...this.deps.activity } }, contextWindowCompression: { slidingWindow: {} }, inputAudioTranscription: {}, outputAudioTranscription: {} }),
-          systemInstruction: { parts: [{ text: fillPrompt(this.deps.prompt, this.variables) + this.openingNote() }] },
+          systemInstruction: { parts: [{ text: this.learnIds(fillPrompt(this.deps.prompt, this.variables)) + this.openingNote() }] },
           tools: geminiTools(),
         },
       })),
@@ -466,6 +471,28 @@ export class CallSession {
   private moveNotBookHint(): string {
     const list = [...this.apptIds].map(([i, t]) => `${i} (${t})`).join(', ');
     return `Not booked yet. The caller already has ${list}. If they want to move one, call reschedule_appointment with its appointment_id and this time as new_start_iso, and tell them it was moved: book_appointment would keep the old one too. Call book_appointment again only if they clearly want one more appointment besides it.`;
+  }
+
+  /** Remembers every id in a text (the facts, a tool's answer); returns the text. */
+  private learnIds(text: string): string {
+    for (const m of text.matchAll(UUID_RE)) this.knownIds.add(m[0].toLowerCase());
+    return text;
+  }
+
+  /** A staff or service id one or two characters off one this call was given is that one: Gemini copied
+   *  «10b40df1-…» as «10b40df0-…» and the booking failed with unknown_service. barber-core still checks it. */
+  private fixIds(c: { name: string; args?: unknown }) {
+    const args = c.args as Record<string, unknown> | undefined;
+    if (!args || typeof args !== 'object' || !this.knownIds.size) return;
+    const fix = (v: unknown) => {
+      if (typeof v !== 'string' || !UUID_ONE.test(v) || this.knownIds.has(v.toLowerCase())) return v;
+      const near = [...this.knownIds].filter((k) => charsOff(k, v.toLowerCase()) <= 2);
+      if (near.length !== 1) return v;
+      this.log('id_corrected', { tool: c.name });
+      return near[0];
+    };
+    if ('staff_id' in args) args.staff_id = fix(args.staff_id);
+    if (Array.isArray(args.service_ids)) args.service_ids = args.service_ids.map(fix);
   }
 
   /** check_availability gave this start in this call (the same instant, however it is written). */
@@ -721,6 +748,7 @@ export class CallSession {
       if (typeof start === 'string' && /[?؟]/.test(this.turnText) && this.readBackIn(start, this.turnText)) noWait.add(c.id);
       this.log('read_back_missing', noWait.has(c.id) ? { same_turn: true } : {});
     }
+    for (const c of calls) this.fixIds(c);
     const forCore = calls.filter((c) => CORE_TOOL_NAMES.has(c.name) && !held.has(c.id));
     let results: { toolCallId: string; result: string }[] = [];
     if (forCore.length) {
@@ -782,6 +810,7 @@ export class CallSession {
         continue;
       }
       const raw = results.find((x) => x.toolCallId === c.id)?.result;
+      if (raw) this.learnIds(raw);
       this.line('tool', `${c.name} → ${String(raw ?? 'no answer').slice(0, 500)}`);
       let result: any = { ok: false, reason: 'system_error' };
       try { if (raw) result = JSON.parse(raw); } catch { /* keep system_error */ }
