@@ -802,6 +802,28 @@ describe('a call', () => {
     assert.equal((await tool('r2', 'reschedule_appointment', { appointment_id: 'appt-1', new_start_iso: slots[0].start_iso })).ok, true);
   });
 
+  it('«new appointment» is a booking: looking up the caller\'s appointments for it is held once; «move my appointment» is not', async () => {
+    const h = harness(OPEN, (list) => list.map((t) => ({ toolCallId: t.id, name: t.name, result: JSON.stringify(t.name === 'find_my_appointments' ? { ok: true, appointments: [] } : { ok: true }) })));
+    await h.s.start('MZ1', ids);
+    h.gem().onOpen();
+    await h.gem().onMessage(JSON.stringify({ setupComplete: {} }));
+    await heard(h);
+    const tool = async (id: string) => {
+      await h.gem().onMessage(JSON.stringify({ toolCall: { functionCalls: [{ id, name: 'find_my_appointments', args: {} }] } }));
+      await new Promise((r) => setImmediate(r));
+      return h.sentToGemini.at(-1).toolResponse.functionResponses[0].response;
+    };
+    const caller = (text: string) => h.gem().onMessage(JSON.stringify({ serverContent: { inputTranscription: { text } } }));
+    await caller('and new appointment believe.');
+    const held = await tool('f1');
+    assert.equal(held.reason, 'new_booking');
+    assert.match(held.hint, /book a new one/);
+    await h.gem().onMessage(JSON.stringify({ serverContent: { outputTranscription: { text: 'Which day?' } } }));
+    await h.gem().onMessage(JSON.stringify({ serverContent: { turnComplete: true } }));
+    await caller('I want to move my appointment');
+    assert.equal((await tool('f2')).ok, true, 'a move looks them up');
+  });
+
   it('cancel_appointment only after a question about that one appointment: the list of the caller\'s appointments is not it (once)', async () => {
     const appts = [{ appointment_id: 'a1', local_time: '09:00' }, { appointment_id: 'a2', local_time: '14:30' }];
     const sent: string[] = [];

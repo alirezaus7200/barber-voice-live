@@ -59,6 +59,9 @@ function apptWords(spoken: unknown[]): { day: string[]; time: string[] } {
   return { day: [...new Set(day.filter((w) => w.length > 1))], time: [...new Set(time.filter((w) => w.length > 1))] };
 }
 
+// a new booking, and a change or cancel, in the caller's words (English, Spanish, Persian)
+const NEW_WORD = /\bnew\b|\bnuev[oa]\b|جدید|تازه/i;
+const CHANGE_WORD = /cancel|\bmove\b|change|reschedul|cambiar|mover|لغو|کنسل|جابج/i;
 const GOODBYE = /خدانگهدار|خداحافظ|\bgood ?bye\b|\bbye\b|adi[oó]s|hasta (luego|pronto)/i;
 const DONE_CLAIM = /\b(is booked|are booked|you're booked|you are booked|booked you|is all set|has been (booked|cancel+ed|moved|rescheduled)|is cancel+ed|(qued[oó]|est[aá]|ya est[aá]) (reservad[ao]|agendad[ao]|confirmad[ao]|cancelad[ao])|ha sido (reservad[ao]|cancelad[ao]))\b|ثبت شد|رزرو شد|رزرو کردم|ثبت کردم|لغو شد|جابجا شد|انجام شد/i;
 const FALSE_CLAIM = 'Correction: nothing has been booked, cancelled or moved in this call: no tool answered ok. Tell the caller right away, in their language, that it is not done yet. Then read the appointment back, and after their yes call book_appointment (or the tool they need). Never say it is done before the tool answers ok.';
@@ -101,7 +104,7 @@ const SILENCE_NUDGE = (lang: string) => `The caller has not answered at all. Tha
 const NOTE_EVENTS = new Set(['reask', 'silence_nudge', 'time_nudge', 'false_claim_corrected', 'unchecked_times_corrected',
   'end_call_refused', 'language_locked', 'gemini_retry', 'gemini_go_away', 'core_tools_failed', 'tool_unknown',
   'tool_before_opening', 'opening_again', 'twilio_update_failed', 'call_ended', 'gemini_setup', 'repeat_muted',
-  'cancel_confirm_missing', 'read_back_missing', 'appointment_id_unknown', 'appointment_id_guessed', 'id_corrected', 'language_guess_refused', 'move_not_named', 'find_after_noise',
+  'cancel_confirm_missing', 'read_back_missing', 'appointment_id_unknown', 'appointment_id_guessed', 'id_corrected', 'language_guess_refused', 'move_not_named', 'find_after_noise', 'find_for_new_booking',
   // the timings, so a long pause in a call can be explained from its text: barber-core's tools, Gemini's answer,
   // the silence count starting again, a nudge Gemini did not answer
   'tool_timing', 'gemini_reply', 'wait_restarted', 'nudge_unanswered']);
@@ -143,6 +146,7 @@ export class CallSession {
   private lastReadBackText = ''; // that read-back's words
   private moveNameRefused = 0;
   private noiseFindRefused = 0;
+  private newFindRefused = 0;
   private bookAfterListRefused = 0;
   private listingPending = false; // find_my_appointments answered: the AI's turn now lists them
   private listText = ''; // that turn's words (the list, not the confirmation)
@@ -444,6 +448,17 @@ export class CallSession {
    *  at all (the words may just not have been written down). */
   private callerLetters(): number | null {
     return this.callerHeard()?.letters ?? null;
+  }
+
+  /** What the caller said since the AI last spoke (marks left out). */
+  private callerSaid(): string {
+    const said: string[] = [];
+    for (let i = this.transcript.length - 1; i >= 0; i--) {
+      const l = this.transcript[i];
+      if (l.speaker === 'ai') break;
+      if (l.speaker === 'caller') said.unshift(l.body.replace(/<[a-z_]+>/gi, ' '));
+    }
+    return said.join(' ');
   }
 
   /** The caller's letters and words since the AI last spoke (marks left out); null when no caller line came. */
@@ -852,6 +867,7 @@ export class CallSession {
     const held = new Set<string>();
     const notOffered = new Set<string>(); // held because check_availability never gave that time
     const moveUnnamed = new Set<string>(); // a move read back without the appointment it moves
+    const newBooking = new Set<string>(); // the appointments looked up for «a new appointment»
     const noiseOnly = new Set<string>(); // the caller's appointments looked up after only noise was heard
     const noWait = new Set<string>(); // read back in the same turn as the tool call: it did not wait for a yes
     const moveNotBook = new Set<string>(); // a new booking while the caller's appointments are on the table
@@ -945,6 +961,18 @@ export class CallSession {
     const guessed = new Set<string>();
     for (const c of calls) {
       // the caller's appointments looked up after only noise: a guess at what they want (a new booking became a move)
+      // «new appointment» is a booking: looking up the caller's appointments for it turned bookings into moves (twice, in
+      // English and in a Persian call), whatever the prompt said
+      if (c.name === 'find_my_appointments' && this.newFindRefused < 1) {
+        const said = this.callerSaid();
+        if (NEW_WORD.test(said) && !CHANGE_WORD.test(said)) {
+          this.newFindRefused += 1;
+          held.add(c.id);
+          newBooking.add(c.id);
+          this.log('find_for_new_booking', {});
+          continue;
+        }
+      }
       if (c.name === 'find_my_appointments' && this.noiseFindRefused < 1) {
         const heard = this.callerHeard();
         if (heard !== null && heard.letters < 2) {
@@ -987,6 +1015,12 @@ export class CallSession {
         this.line('tool', `${c.name} → held: read back which appointment moves`);
         responses.push({ id: c.id, name: c.name, response: { ok: false, reason: 'read_back_first',
           hint: 'Not moved yet: read it back naming both, the appointment it moves (its day and time) and the new day and time, as one question, then wait for a clear yes.' } });
+        continue;
+      }
+      if (newBooking.has(c.id)) {
+        this.line('tool', `${c.name} → held: a new booking`);
+        responses.push({ id: c.id, name: c.name, response: { ok: false, reason: 'new_booking',
+          hint: 'The caller asked for a new appointment: book a new one (ask the day if they did not say it, then check_availability). Never look up, move or cancel their appointments for it. Say nothing about this note.' } });
         continue;
       }
       if (noiseOnly.has(c.id)) {
