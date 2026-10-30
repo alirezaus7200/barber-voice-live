@@ -694,6 +694,35 @@ describe('a call', () => {
     assert.equal((await tool('l2')).ok, true, 'real Persian words: the switch goes through');
   });
 
+  it('cancel: «one at 9:00 AM and one at 6:30 PM, which one?» is not a confirmation; a question naming only that one is', async () => {
+    const appts = [
+      { appointment_id: 'a1', local_date: '2026-10-31', local_time: '09:00', spoken_en: 'Saturday, October 31 at 9:00 AM with Erfan for Haircut' },
+      { appointment_id: 'a2', local_date: '2026-10-31', local_time: '18:30', spoken_en: 'Saturday, October 31 at 6:30 PM with Erfan for Haircut' },
+      { appointment_id: 'a3', local_date: '2026-11-01', local_time: '09:00', spoken_en: 'Sunday, November 1 at 9:00 AM with Erfan for Haircut' }];
+    const sent: string[] = [];
+    const h = harness(OPEN, (list) => list.map((t) => { sent.push(t.name); return { toolCallId: t.id, name: t.name, result: JSON.stringify(t.name === 'find_my_appointments' ? { ok: true, appointments: appts } : { ok: true }) }; }));
+    await h.s.start('MZ1', ids);
+    h.gem().onOpen();
+    await h.gem().onMessage(JSON.stringify({ setupComplete: {} }));
+    await heard(h);
+    const tool = async (id: string, name: string, args: unknown = {}) => {
+      await h.gem().onMessage(JSON.stringify({ toolCall: { functionCalls: [{ id, name, args }] } }));
+      await new Promise((r) => setImmediate(r));
+      return h.sentToGemini.at(-1).toolResponse.functionResponses[0].response;
+    };
+    const turn = async (text: string) => {
+      await h.gem().onMessage(JSON.stringify({ serverContent: { outputTranscription: { text } } }));
+      await h.gem().onMessage(JSON.stringify({ serverContent: { turnComplete: true } }));
+    };
+    await tool('f1', 'find_my_appointments');
+    await turn('I found three appointments: Saturday, October 31 at 9:00 AM, Saturday, October 31 at 6:30 PM and Sunday, November 1 at 9:00 AM. Which one would you like to cancel?');
+    await turn('You have two appointments on Saturday, October 31st: one at 9:00 AM and one at 6:30 PM. Which one would you like to cancel?');
+    assert.equal((await tool('x1', 'cancel_appointment', { appointment_id: 'appt-1' })).reason, 'confirm_first', 'asked which, not confirmed');
+    await turn('Cancel your haircut on Saturday, October 31 at 9 AM, is that right?');
+    assert.equal((await tool('x2', 'cancel_appointment', { appointment_id: 'appt-1' })).ok, true, 'only that one named: confirmed (9 AM for 9:00 AM)');
+    assert.deepEqual(sent.filter((n) => n === 'cancel_appointment').length, 1);
+  });
+
   it('cancel_appointment only after a question about that one appointment: the list of the caller\'s appointments is not it (once)', async () => {
     const appts = [{ appointment_id: 'a1', local_time: '09:00' }, { appointment_id: 'a2', local_time: '14:30' }];
     const sent: string[] = [];

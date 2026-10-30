@@ -45,6 +45,20 @@ const UUID_ONE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$
 /** How many characters differ between two ids of the same length. */
 const charsOff = (a: string, b: string) => [...a].reduce((n, ch, i) => n + (ch === b[i] ? 0 : 1), 0);
 const CLAIM_WAIT_MS = 3000; // a "booked" claim is corrected only if no tool made it true by then
+/** An appointment's day and time as barber-core says them («Saturday, October 31 at 9:00 AM with …», «sábado, 31 de
+ *  octubre a las 9:00 de la mañana con …», «شنبه سی و یکم اکتبر ساعت نه صبح با …»), with the weekday and «9 AM» too. */
+function apptWords(spoken: unknown[]): { day: string[]; time: string[] } {
+  const day: string[] = [], time: string[] = [];
+  for (const s of spoken) {
+    if (typeof s !== 'string') continue;
+    const m = s.match(/^(.+?) at (.+?) with /) ?? s.match(/^(.+?) a las? (.+?) con /) ?? s.match(/^(.+?) ساعت (.+?) با /);
+    if (!m) continue;
+    day.push(m[1], m[1].split(/[\s,،]+/)[0]);
+    time.push(m[2], m[2].replace(':00', ''));
+  }
+  return { day: [...new Set(day.filter((w) => w.length > 1))], time: [...new Set(time.filter((w) => w.length > 1))] };
+}
+
 const GOODBYE = /خدانگهدار|خداحافظ|\bgood ?bye\b|\bbye\b|adi[oó]s|hasta (luego|pronto)/i;
 const DONE_CLAIM = /\b(is booked|are booked|you're booked|you are booked|booked you|is all set|has been (booked|cancel+ed|moved|rescheduled)|is cancel+ed|(qued[oó]|est[aá]|ya est[aá]) (reservad[ao]|agendad[ao]|confirmad[ao]|cancelad[ao])|ha sido (reservad[ao]|cancelad[ao]))\b|ثبت شد|رزرو شد|رزرو کردم|ثبت کردم|لغو شد|جابجا شد|انجام شد/i;
 const FALSE_CLAIM = 'Correction: nothing has been booked, cancelled or moved in this call: no tool answered ok. Tell the caller right away, in their language, that it is not done yet. Then read the appointment back, and after their yes call book_appointment (or the tool they need). Never say it is done before the tool answers ok.';
@@ -130,6 +144,7 @@ export class CallSession {
   private listingPending = false; // find_my_appointments answered: the AI's turn now lists them
   private listText = ''; // that turn's words (the list, not the confirmation)
   private apptCount = 0;
+  private apptSaid = new Map<string, { day: string[]; time: string[] }>(); // each found appointment's day and time as said
   private cancelRefused = 0;
   private apptIds = new Map<string, string>(); // the caller's appointments this call found: short name (appt-1) -> its time
   private apptAlias = new Map<string, string>(); // short name -> barber-core's id (Gemini cannot copy a long id: it made them up)
@@ -513,9 +528,18 @@ export class CallSession {
 
   /** The caller was asked about the one appointment to cancel: the AI's last turn is a question, and not the list of
    *  their appointments (unless there was only one, which that question names). */
-  private cancelConfirmed(): boolean {
+  private cancelConfirmed(realId?: unknown): boolean {
     const last = this.lastTurns.at(-1) ?? '';
     if (!/[?؟]/.test(last)) return false;
+    // the question names this appointment (its day and time) and no other: «one at 9:00 AM and one at 6:30 PM. Which one?»
+    // asked which, it did not confirm (the English cancel test cancelled on «9:00 a.m.» with no yes)
+    const alias = [...this.apptAlias].find(([, real]) => real === realId)?.[0];
+    const said = alias ? this.apptSaid.get(alias) : undefined;
+    if (said) {
+      const names = (w: { day: string[]; time: string[] }) => w.day.some((d) => last.includes(d)) && w.time.some((t) => last.includes(t));
+      if (!names(said)) return false;
+      return ![...this.apptSaid].some(([a, w]) => a !== alias && names(w));
+    }
     return last !== this.listText || this.apptCount === 1;
   }
 
@@ -798,13 +822,13 @@ export class CallSession {
         this.badIdTold += 1;
         this.log('appointment_id_unknown', {});
         badId.set(c.id, { ok: false, reason: 'unknown_appointment_id',
-          hint: `Use an appointment_id exactly as find_my_appointments gave it: ${[...this.apptIds].map(([i, t]) => `${i} (${t})`).join(', ')}.` });
+          hint: `Not done yet, and nothing went wrong: say nothing about it to the caller. Call the tool again now with an appointment_id exactly as find_my_appointments gave it: ${[...this.apptIds].map(([i, t]) => `${i} (${t})`).join(', ')}.` });
       }
     }
     for (const c of calls) {
       const args = c.args as any;
       if (badId.has(c.id)) { held.add(c.id); continue; }
-      if (c.name === 'cancel_appointment' && this.cancelRefused < 1 && !this.cancelConfirmed()) {
+      if (c.name === 'cancel_appointment' && this.cancelRefused < 2 && !this.cancelConfirmed(args?.appointment_id)) {
         held.add(c.id);
         this.cancelRefused += 1;
         this.log('cancel_confirm_missing', {});
@@ -953,6 +977,8 @@ export class CallSession {
           let alias = [...this.apptAlias].find(([, real]) => real === a.appointment_id)?.[0];
           if (!alias) { alias = `appt-${this.apptAlias.size + 1}`; this.apptAlias.set(alias, a.appointment_id); }
           this.apptIds.set(alias, `${a.local_date ?? ''} ${a.local_time ?? ''}`.trim());
+          const said = apptWords([a.spoken, a.spoken_en, a.spoken_es]);
+          if (said.day.length && said.time.length) this.apptSaid.set(alias, said);
           return { ...a, appointment_id: alias };
         }) };
       }
