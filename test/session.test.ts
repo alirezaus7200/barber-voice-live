@@ -442,6 +442,12 @@ describe('a call', () => {
     assert.equal(held.reason, 'read_back_first');
     assert.deepEqual(sentToCore.filter((n) => n !== 'previous_visit_reminder'), ['check_availability'], 'not sent to barber-core');
     assert.ok(h.logs.some(([e]) => e === 'read_back_missing'));
+    (h.s as any).readBackRefused = 0;
+    await h.gem().onMessage(JSON.stringify({ serverContent: { outputTranscription: { text: 'جمعه سی‌ام اکتبر ساعت نه صبح انجام شد. درسته؟' } } }));
+    const rushed = await tool('b1b', 'book_appointment', { start_iso: slots[0].start_iso });
+    assert.equal(rushed.reason, 'read_back_first');
+    assert.match(rushed.hint, /did not|same breath/, 'read back and the tool in one turn: told to wait for the answer');
+    await h.gem().onMessage(JSON.stringify({ serverContent: { interrupted: true } })); // the caller answers: the rushed turn is over
     await turn('اصلاح مو با عرفان، جمعه سی‌ام اکتبر ساعت نه صبح، به نام علیرضا نعمتی. درسته؟');
     await turn('درسته؟'); // a re-ask after the read-back: the read-back still counts
     assert.equal((await tool('b2', 'book_appointment', { start_iso: slots[0].start_iso })).ok, true);
