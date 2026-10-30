@@ -922,7 +922,8 @@ export class CallSession {
       if (!asked || asked === current || heard === null) continue;
       // after the call's language is set, a switch it only heard (not asked for) needs a whole sentence: one word
       // («Bueno», «مانند») from an English speaker with an accent flipped the call to Spanish and Persian
-      const fewWords = this.lockedLanguage !== null && (c.args as any)?.how !== 'chose' && heard.words < 3;
+      // (before it is set too: the call opens in a language, and «ببینید» alone switched an English call to Persian)
+      const fewWords = (c.args as any)?.how !== 'chose' && heard.words < (this.lockedLanguage !== null ? 3 : 2);
       if (heard.letters >= 2 && !fewWords) continue;
       this.langGuessRefused += 1;
       held.add(c.id);
