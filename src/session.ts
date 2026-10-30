@@ -60,6 +60,9 @@ function apptWords(spoken: unknown[]): { day: string[]; time: string[] } {
 }
 
 // a new booking, and a change or cancel, in the caller's words (English, Spanish, Persian)
+// the caller's answer to a read-back: a no (and no yes in it)
+const NO_WORD = /^\s*(no|nope|nah|not|non|نه|نخیر|نچ)(\b|[\s,.!؟?،]|$)/i;
+const YES_WORD = /\b(yes|yeah|yep|sure|ok|okay|correct|right|s[ií]|claro|vale)\b|بله|آره|درسته|باشه|اوکی/i;
 const NEW_WORD = /\bnew\b|\bnuev[oa]\b|جدید|تازه/i;
 const CHANGE_WORD = /cancel|\bmove\b|change|reschedul|cambiar|mover|لغو|کنسل|جابج/i;
 const GOODBYE = /خدانگهدار|خداحافظ|\bgood ?bye\b|\bbye\b|adi[oó]s|hasta (luego|pronto)/i;
@@ -104,7 +107,7 @@ const SILENCE_NUDGE = (lang: string) => `The caller has not answered at all. Tha
 const NOTE_EVENTS = new Set(['reask', 'silence_nudge', 'time_nudge', 'false_claim_corrected', 'unchecked_times_corrected',
   'end_call_refused', 'language_locked', 'gemini_retry', 'gemini_go_away', 'core_tools_failed', 'tool_unknown',
   'tool_before_opening', 'opening_again', 'twilio_update_failed', 'call_ended', 'gemini_setup', 'repeat_muted',
-  'cancel_confirm_missing', 'read_back_missing', 'appointment_id_unknown', 'appointment_id_guessed', 'id_corrected', 'language_guess_refused', 'move_not_named', 'find_after_noise', 'find_for_new_booking',
+  'cancel_confirm_missing', 'read_back_missing', 'appointment_id_unknown', 'appointment_id_guessed', 'id_corrected', 'language_guess_refused', 'move_not_named', 'find_after_noise', 'find_for_new_booking', 'caller_said_no',
   // the timings, so a long pause in a call can be explained from its text: barber-core's tools, Gemini's answer,
   // the silence count starting again, a nudge Gemini did not answer
   'tool_timing', 'gemini_reply', 'wait_restarted', 'nudge_unanswered']);
@@ -147,6 +150,7 @@ export class CallSession {
   private moveNameRefused = 0;
   private noiseFindRefused = 0;
   private newFindRefused = 0;
+  private saidNoRefused = 0;
   private bookAfterListRefused = 0;
   private listingPending = false; // find_my_appointments answered: the AI's turn now lists them
   private listText = ''; // that turn's words (the list, not the confirmation)
@@ -452,28 +456,30 @@ export class CallSession {
 
   /** What the caller said since the AI last spoke (marks left out). */
   private callerSaid(): string {
-    const said: string[] = [];
-    for (let i = this.transcript.length - 1; i >= 0; i--) {
-      const l = this.transcript[i];
-      if (l.speaker === 'ai') break;
-      if (l.speaker === 'caller') said.unshift(l.body.replace(/<[a-z_]+>/gi, ' '));
-    }
-    return said.join(' ');
+    return this.lastCallerLines().map((l) => l.body.replace(/<[a-z_]+>/gi, ' ')).join(' ');
+  }
+
+  /** The caller's lines before the AI's current words: the AI often speaks first and calls the tool after
+   *  («¡Hola! ¿En qué puedo ayudarle?» then set_caller_language es), so the lines of this turn are skipped first. */
+  private lastCallerLines(): TranscriptLine[] {
+    let i = this.transcript.length - 1;
+    while (i >= 0 && this.transcript[i].speaker !== 'caller') i--;
+    const lines: TranscriptLine[] = [];
+    for (; i >= 0 && this.transcript[i].speaker !== 'ai'; i--) if (this.transcript[i].speaker === 'caller') lines.unshift(this.transcript[i]);
+    return lines;
   }
 
   /** The caller's letters and words since the AI last spoke (marks left out); null when no caller line came. */
   private callerHeard(): { letters: number; words: number } | null {
-    let letters = 0, words = 0, lines = 0;
-    for (let i = this.transcript.length - 1; i >= 0; i--) {
-      const l = this.transcript[i];
-      if (l.speaker === 'ai') break;
-      if (l.speaker !== 'caller') continue;
-      lines += 1;
+    const lines = this.lastCallerLines();
+    if (!lines.length) return null;
+    let letters = 0, words = 0;
+    for (const l of lines) {
       const text = l.body.replace(/<[a-z_]+>/gi, ' ');
       letters += (text.match(/\p{L}/gu) ?? []).length;
       words += text.split(/\s+/).filter((w) => /\p{L}/u.test(w)).length;
     }
-    return lines ? { letters, words } : null;
+    return { letters, words };
   }
 
   private callLanguageName(): string {
@@ -867,6 +873,7 @@ export class CallSession {
     const held = new Set<string>();
     const notOffered = new Set<string>(); // held because check_availability never gave that time
     const moveUnnamed = new Set<string>(); // a move read back without the appointment it moves
+    const saidNo = new Set<string>(); // booked or moved after the caller said no to the read-back
     const newBooking = new Set<string>(); // the appointments looked up for «a new appointment»
     const noiseOnly = new Set<string>(); // the caller's appointments looked up after only noise was heard
     const noWait = new Set<string>(); // read back in the same turn as the tool call: it did not wait for a yes
@@ -935,6 +942,17 @@ export class CallSession {
         this.noWaitRefused += 1;
         this.log('read_back_missing', { same_turn: true });
         continue;
+      }
+      // the caller said no to the read-back («No, good why» was booked): never book or move on a no
+      if (this.saidNoRefused < 2 && this.lastReadBack !== null && this.readBackAnswered) {
+        const said = this.callerSaid();
+        if (NO_WORD.test(said) && !YES_WORD.test(said)) {
+          held.add(c.id);
+          saidNo.add(c.id);
+          this.saidNoRefused += 1;
+          this.log('caller_said_no', {});
+          continue;
+        }
       }
       if (c.name === 'reschedule_appointment' && this.moveNameRefused < 1 && this.readBackDone(start)) {
         // a move's read-back names the appointment it moves, not only the new time («Your haircut on Tuesday at 4 PM, is
@@ -1015,6 +1033,12 @@ export class CallSession {
         this.line('tool', `${c.name} → held: read back which appointment moves`);
         responses.push({ id: c.id, name: c.name, response: { ok: false, reason: 'read_back_first',
           hint: 'Not moved yet: read it back naming both, the appointment it moves (its day and time) and the new day and time, as one question, then wait for a clear yes.' } });
+        continue;
+      }
+      if (saidNo.has(c.id)) {
+        this.line('tool', `${c.name} → held: the caller said no`);
+        responses.push({ id: c.id, name: c.name, response: { ok: false, reason: 'caller_said_no',
+          hint: 'Not done: the caller said no to your read-back. Do not book or move. Ask, short, what to change (day, time, staff member or service), or whether they want to stop.' } });
         continue;
       }
       if (newBooking.has(c.id)) {
