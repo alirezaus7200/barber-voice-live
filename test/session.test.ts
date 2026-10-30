@@ -768,6 +768,40 @@ describe('a call', () => {
     assert.equal((await tool('l4', 'es')).ok, true, 'a whole sentence in Spanish: switched');
   });
 
+  it('a move read back without the appointment it moves is held once; the appointments are not looked up after only noise', async () => {
+    const appts = [{ appointment_id: 'a1', local_date: '2026-10-31', local_time: '13:30', spoken_en: 'Saturday, October 31 at 1:30 PM with Erfan for Haircut' }];
+    const slots = [{ start_iso: '2026-11-03T21:00:00.000Z', local_time: '16:00', spoken: '4:00 PM', spoken_en: '4:00 PM' }];
+    const h = harness(OPEN, (list) => list.map((t) => ({ toolCallId: t.id, name: t.name, result: JSON.stringify(
+      t.name === 'find_my_appointments' ? { ok: true, appointments: appts } : t.name === 'check_availability' ? { ok: true, day_spoken: 'Tuesday, November 3', slots } : { ok: true }) })));
+    await h.s.start('MZ1', ids);
+    h.gem().onOpen();
+    await h.gem().onMessage(JSON.stringify({ setupComplete: {} }));
+    await heard(h);
+    const tool = async (id: string, name: string, args: unknown = {}) => {
+      await h.gem().onMessage(JSON.stringify({ toolCall: { functionCalls: [{ id, name, args }] } }));
+      await new Promise((r) => setImmediate(r));
+      return h.sentToGemini.at(-1).toolResponse.functionResponses[0].response;
+    };
+    const turn = async (text: string) => {
+      await h.gem().onMessage(JSON.stringify({ serverContent: { outputTranscription: { text } } }));
+      await h.gem().onMessage(JSON.stringify({ serverContent: { turnComplete: true } }));
+    };
+    const caller = (text: string) => h.gem().onMessage(JSON.stringify({ serverContent: { inputTranscription: { text } } }));
+    await caller('<noise>');
+    assert.equal((await tool('f0', 'find_my_appointments')).reason, 'no_words_heard', 'only noise: no guessing a move');
+    await caller(' I want to move my appointment');
+    await tool('f1', 'find_my_appointments');
+    await tool('c1', 'check_availability');
+    await turn('Your haircut on Tuesday, November 3 at 4:00 PM, is that right?');
+    await caller('Yeah.');
+    const held = await tool('r1', 'reschedule_appointment', { appointment_id: 'appt-1', new_start_iso: slots[0].start_iso });
+    assert.equal(held.reason, 'read_back_first');
+    assert.match(held.hint, /naming both/);
+    await turn('Your haircut on Saturday, October 31 at 1:30 PM moves to Tuesday, November 3 at 4:00 PM, right?');
+    await caller('Yes.');
+    assert.equal((await tool('r2', 'reschedule_appointment', { appointment_id: 'appt-1', new_start_iso: slots[0].start_iso })).ok, true);
+  });
+
   it('cancel_appointment only after a question about that one appointment: the list of the caller\'s appointments is not it (once)', async () => {
     const appts = [{ appointment_id: 'a1', local_time: '09:00' }, { appointment_id: 'a2', local_time: '14:30' }];
     const sent: string[] = [];
