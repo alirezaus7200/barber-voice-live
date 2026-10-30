@@ -242,6 +242,7 @@ describe('the booking steps in the prompt', () => {
     assert.ok(prompt.includes('«نه صبح»,\n  «نه شب» and «ساعت نه» are always nine'), 'nine in the morning is a time');
     assert.ok(prompt.includes('Confirm once.'), 'one confirmation: never the time alone, then the read-back');
     assert.ok(prompt.includes('A weekday and a date that do not match'), 'Saturday the 30th is said back with both');
+    assert.ok(prompt.includes('Arabic is not Persian'), 'a caller speaking Arabic is not answered in Persian');
     assert.ok(prompt.includes('never say «متوجه نشدم» to it'), 'a request to repeat is answered by repeating');
     assert.ok(prompt.includes('«اولین وقت خالی»'), 'the soonest, in Persian');
     assert.ok(prompt.includes('the day after Friday,\n  October 30 is Saturday, October 31'));
