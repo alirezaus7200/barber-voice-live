@@ -245,6 +245,7 @@ describe('the booking steps in the prompt', () => {
     assert.ok(prompt.includes('Arabic is not Persian'), 'a caller speaking Arabic is not answered in Persian');
     assert.ok(prompt.includes("The caller's own name is never a staff member"), 'a caller called Alireza does not book with staff Alireza');
     assert.ok(prompt.includes('the next thing you say is the read-back'), 'no «این وقت مناسبه؟» before the read-back');
+    assert.ok(prompt.includes('with earliest_time set to that time'), 'a time not offered is checked, never swapped (9:30 is never 9:00)');
     assert.ok(prompt.includes('never say «متوجه نشدم» to it'), 'a request to repeat is answered by repeating');
     assert.ok(prompt.includes('«اولین وقت خالی»'), 'the soonest, in Persian');
     assert.ok(prompt.includes('the day after Friday,\n  October 30 is Saturday, October 31'));
