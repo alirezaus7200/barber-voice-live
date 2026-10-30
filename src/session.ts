@@ -248,13 +248,14 @@ export class CallSession {
         this.line('system', `gemini_closed ${JSON.stringify({ code: code ?? null, reason: String(reason ?? '').slice(0, 200) })}`);
         // mid-call (it had been working): the same full settings again, with the conversation so far. The plain retry
         // lost the call's text, our turns and the conversation: the dl-mixed test then ran 4 minutes in confusion
-        if (code === 1007 && this.openingHeard && this.reconnects < 2) {
+        // the same for Gemini's own internal error (1011: the noise test dropped the call 26 s in) and a lost connection (1006)
+        if ((code === 1007 || code === 1011 || code === 1006) && this.openingHeard && this.reconnects < 2) {
           this.reconnects += 1;
           this.ready = false;
           this.inTurn = false; // a caller's turn half-sent to the old session starts again in the new one
           this.preroll = [];
           this.resumeNote = this.conversationSoFar();
-          this.log('gemini_retry', { reason: 'closed mid-call', n: this.reconnects });
+          this.log('gemini_retry', { reason: 'closed mid-call', code, n: this.reconnects });
           this.connectGemini(false);
           return;
         }
