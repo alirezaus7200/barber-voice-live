@@ -688,7 +688,7 @@ describe('a call', () => {
     await h.gem().onMessage(JSON.stringify({ serverContent: { inputTranscription: { text: '<noise>' } } }));
     const guess = await tool('l1');
     assert.equal(guess.reason, 'no_words_heard');
-    assert.match(guess.hint, /never pick a language from noise or the caller's name/);
+    assert.match(guess.hint, /never pick a language from them/);
     assert.ok(!sent.includes('set_caller_language'), 'not sent to barber-core');
     await h.gem().onMessage(JSON.stringify({ serverContent: { inputTranscription: { text: ' سلام یه نوبت می‌خواستم' } } }));
     assert.equal((await tool('l2')).ok, true, 'real Persian words: the switch goes through');
@@ -721,6 +721,34 @@ describe('a call', () => {
     await turn('Cancel your haircut on Saturday, October 31 at 9 AM, is that right?');
     assert.equal((await tool('x2', 'cancel_appointment', { appointment_id: 'appt-1' })).ok, true, 'only that one named: confirmed (9 AM for 9:00 AM)');
     assert.deepEqual(sent.filter((n) => n === 'cancel_appointment').length, 1);
+  });
+
+  it('once the call is in English, one word («Bueno») does not switch it; a whole sentence or a request does', async () => {
+    const h = harness(OPEN, (list) => list.map((t) => ({ toolCallId: t.id, name: t.name, result: JSON.stringify({ ok: true, language: t.args.language, saved: false }) })));
+    await h.s.start('MZ1', ids);
+    h.gem().onOpen();
+    await h.gem().onMessage(JSON.stringify({ setupComplete: {} }));
+    await heard(h);
+    const tool = async (id: string, language: string, how = 'detected') => {
+      await h.gem().onMessage(JSON.stringify({ toolCall: { functionCalls: [{ id, name: 'set_caller_language', args: { language, how } }] } }));
+      await new Promise((r) => setImmediate(r));
+      return h.sentToGemini.at(-1).toolResponse.functionResponses[0].response;
+    };
+    const caller = (text: string) => h.gem().onMessage(JSON.stringify({ serverContent: { inputTranscription: { text } } }));
+    const ai = async (text: string) => {
+      await h.gem().onMessage(JSON.stringify({ serverContent: { outputTranscription: { text } } }));
+      await h.gem().onMessage(JSON.stringify({ serverContent: { turnComplete: true } }));
+    };
+    await caller('I want to move my appointment.');
+    assert.equal((await tool('l1', 'en')).ok, true, 'English from the first sentence');
+    await ai('Which day is the one you mean?');
+    await caller('Bueno.');
+    assert.equal((await tool('l2', 'es')).reason, 'no_words_heard', 'one word is not a new language');
+    await caller(' Monday.');
+    assert.equal((await tool('l3', 'en', 'chose')).ok, true, 'a choice always goes through');
+    await ai('Which day?');
+    await caller('Quiero cambiar mi cita para el miércoles.');
+    assert.equal((await tool('l4', 'es')).ok, true, 'a whole sentence in Spanish: switched');
   });
 
   it('cancel_appointment only after a question about that one appointment: the list of the caller\'s appointments is not it (once)', async () => {

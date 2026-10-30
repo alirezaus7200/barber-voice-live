@@ -440,13 +440,22 @@ export class CallSession {
   /** Letters the caller said since the AI last spoke (noise marks like <noise> left out); null when no caller line came
    *  at all (the words may just not have been written down). */
   private callerLetters(): number | null {
-    let n = 0, lines = 0;
+    return this.callerHeard()?.letters ?? null;
+  }
+
+  /** The caller's letters and words since the AI last spoke (marks left out); null when no caller line came. */
+  private callerHeard(): { letters: number; words: number } | null {
+    let letters = 0, words = 0, lines = 0;
     for (let i = this.transcript.length - 1; i >= 0; i--) {
       const l = this.transcript[i];
       if (l.speaker === 'ai') break;
-      if (l.speaker === 'caller') { lines += 1; n += (l.body.replace(/<[a-z_]+>/gi, '').match(/\p{L}/gu) ?? []).length; }
+      if (l.speaker !== 'caller') continue;
+      lines += 1;
+      const text = l.body.replace(/<[a-z_]+>/gi, ' ');
+      letters += (text.match(/\p{L}/gu) ?? []).length;
+      words += text.split(/\s+/).filter((w) => /\p{L}/u.test(w)).length;
     }
-    return lines ? n : null;
+    return lines ? { letters, words } : null;
   }
 
   private callLanguageName(): string {
@@ -501,7 +510,8 @@ export class CallSession {
     const who: Record<string, string> = { ai: 'You', caller: 'Caller', tool: 'Tool' };
     const said = this.transcript.filter((l) => l.speaker !== 'system').slice(-40)
       .map((l) => `${who[l.speaker]}: ${l.body.slice(0, 400)}`).join('\n');
-    return `Note from the phone system: the connection was renewed in the middle of this call; the opening was already said. `
+    const lang = this.lockedLanguage ? `The call is in ${this.callLanguageName()}: answer in it. ` : '';
+    return `Note from the phone system: the connection was renewed in the middle of this call; the opening was already said. ${lang}`
       + `The conversation so far:\n${said}\nGo on from exactly where it stopped, in the caller's language: never greet again or repeat `
       + `the opening. If your last question was not answered, ask it once, short; otherwise wait for the caller.`;
   }
@@ -908,12 +918,16 @@ export class CallSession {
       if (c.name !== 'set_caller_language' || this.langGuessRefused >= 2) continue;
       const asked = String((c.args as any)?.language ?? '').split('-')[0];
       const current = String(this.lockedLanguage ?? this.variables.default_language ?? 'en').split('-')[0];
-      const heard = this.callerLetters();
-      if (!asked || asked === current || heard === null || heard >= 2) continue;
+      const heard = this.callerHeard();
+      if (!asked || asked === current || heard === null) continue;
+      // after the call's language is set, a switch it only heard (not asked for) needs a whole sentence: one word
+      // («Bueno», «مانند») from an English speaker with an accent flipped the call to Spanish and Persian
+      const fewWords = this.lockedLanguage !== null && (c.args as any)?.how !== 'chose' && heard.words < 3;
+      if (heard.letters >= 2 && !fewWords) continue;
       this.langGuessRefused += 1;
       held.add(c.id);
       guessed.add(c.id);
-      this.log('language_guess_refused', { asked });
+      this.log('language_guess_refused', { asked, words: heard.words });
     }
     const forCore = calls.filter((c) => CORE_TOOL_NAMES.has(c.name) && !held.has(c.id));
     let results: { toolCallId: string; result: string }[] = [];
@@ -929,10 +943,10 @@ export class CallSession {
     }
     for (const c of calls) {
       if (guessed.has(c.id)) {
-        this.line('tool', `${c.name} → held: no words heard yet`);
+        this.line('tool', `${c.name} → held: not enough words to change the language`);
         const name = this.callLanguageName();
         responses.push({ id: c.id, name: c.name, response: { ok: false, reason: 'no_words_heard',
-          hint: `You have not heard the caller's words yet, only noise: never pick a language from noise or the caller's name. Stay in ${name} and ask once, short, in ${name}, to say it again.` } });
+          hint: `Not enough of the caller's words to change the language (noise, a name or one word may be an accent): never pick a language from them. Stay in ${name}; change only when the caller speaks a whole sentence in another language or asks for it. If you did not understand, ask once, short, in ${name}, to say it again.` } });
         continue;
       }
       if (badId.has(c.id)) {
