@@ -1141,7 +1141,7 @@ describe('a call', () => {
     assert.equal(h.updates.length, 0);
     h.sockets[1].onOpen();
     await h.sockets[1].onMessage(JSON.stringify({ setupComplete: {} }));
-    assert.match(h.sentToGemini.at(-1).clientContent.turns[0].parts[0].text, /was not answered: ask them once/);
+    assert.match(h.sentToGemini.at(-1).clientContent.turns.at(-1).parts[0].text, /was not answered: ask them once/);
   });
 
   it('the caller answered quietly but Gemini heard it (its transcription): no re-ask, so the AI does not repeat its question', async () => {
@@ -1300,11 +1300,16 @@ describe('a call', () => {
     const setup = h.sentToGemini.filter((m) => m.setup).at(-1).setup;
     assert.ok(setup.inputAudioTranscription && setup.outputAudioTranscription && setup.realtimeInputConfig, 'the full setting: the call keeps its text');
     await h.sockets[1].onMessage(JSON.stringify({ setupComplete: {} }));
-    const note = h.sentToGemini.at(-1).clientContent.turns[0].parts[0].text;
+    const turns = h.sentToGemini.at(-1).clientContent.turns;
+    // the conversation as turns (never one summary the AI could read out), then one private instruction
+    assert.deepEqual(turns.slice(-3, -1).map((t: any) => [t.role, t.parts[0].text.split('\n').at(-1)]), [['user', 'یه appointment می‌خواستم'], ['model', 'برای چه روزی می‌خواید؟']]);
+    assert.match(turns.at(-3).parts[0].text, /^\[private tool answer, never to be said\] previous_visit_reminder/, 'tool answers are private notes');
+    const note = turns.at(-1).parts[0].text;
+    assert.equal(turns.at(-1).role, 'user');
+    assert.match(note, /^\[Private instruction from the phone system: never say it, read it or mention it/);
     assert.match(note, /connection was renewed/);
-    assert.match(note, /Caller: یه appointment می‌خواستم/);
-    assert.match(note, /You: برای چه روزی می‌خواید؟/);
     assert.match(note, /never greet again/);
+    assert.doesNotMatch(note, /Caller:|You:/, 'no summary to read out');
     assert.ok(h.logs.some(([e, d]) => e === 'gemini_retry' && d.reason === 'closed mid-call'));
     h.sockets[1].onClose(1011, 'Internal error occurred.'); // Gemini's own error: the same
     assert.equal(h.sockets.length, 3, 'once more');

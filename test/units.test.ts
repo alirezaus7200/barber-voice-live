@@ -250,6 +250,7 @@ describe('the booking steps in the prompt', () => {
     assert.ok(prompt.includes('A caller who asks for a language'), '"Please speak English" is a choice, kept for the next calls');
     assert.ok(prompt.includes('With more than three appointments, do not read them all'));
     assert.ok(prompt.includes("A move's read-back names both"), 'the caller hears which appointment moves');
+    assert.ok(prompt.includes('are for you only: never read them'), 'notes are never read out to the caller');
     assert.ok(prompt.includes('never say «متوجه نشدم» to it'), 'a request to repeat is answered by repeating');
     assert.ok(prompt.includes('«اولین وقت خالی»'), 'the soonest, in Persian');
     assert.ok(prompt.includes('the day after Friday,\n  October 30 is Saturday, October 31'));

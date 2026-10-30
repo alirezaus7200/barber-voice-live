@@ -180,7 +180,7 @@ export class CallSession {
   private geminiGen = 0;
   private nudgeAt = 0; // when the last re-ask or silence note went to Gemini
   private reconnects = 0; // Gemini closed mid-call (1007) and this call opened it again, with what was said
-  private resumeNote = ''; // the conversation so far, for the new session
+  private resumeTurns: unknown[] | null = null; // the conversation so far, as turns, for the new session
   private t0 = 0; // when Twilio's start came (ms), for the start-up timings
   private firstAudio = false;
   // The opening (AI disclosure, recording notice) is heard in full: until Twilio confirms it was played,
@@ -274,7 +274,7 @@ export class CallSession {
           this.ready = false;
           this.inTurn = false; // a caller's turn half-sent to the old session starts again in the new one
           this.preroll = [];
-          this.resumeNote = this.conversationSoFar();
+          this.resumeTurns = this.conversationSoFar();
           this.log('gemini_retry', { reason: 'closed mid-call', code, n: this.reconnects });
           this.connectGemini(false);
           return;
@@ -496,7 +496,7 @@ export class CallSession {
     this.preroll = [];
     this.nudgePending = false;
     this.aiWaitingSince = 0;
-    this.resumeNote = this.conversationSoFar() + ` The caller spoke just now and was not answered: ask them once, short, in ${this.callLanguageName()}, to say it again.`;
+    this.resumeTurns = this.conversationSoFar(`The caller spoke just now and was not answered: ask them once, short, in ${this.callLanguageName()}, to say it again.`);
     this.line('system', `gemini_retry ${JSON.stringify({ reason, n: this.reconnects })}`);
     this.deps.log('gemini_retry', { reason, n: this.reconnects });
     const old = this.gemini;
@@ -506,14 +506,24 @@ export class CallSession {
   }
 
   /** What was said so far (the AI, the caller, the tools' answers), for a session opened again mid-call. */
-  private conversationSoFar(): string {
-    const who: Record<string, string> = { ai: 'You', caller: 'Caller', tool: 'Tool' };
-    const said = this.transcript.filter((l) => l.speaker !== 'system').slice(-40)
-      .map((l) => `${who[l.speaker]}: ${l.body.slice(0, 400)}`).join('\n');
-    const lang = this.lockedLanguage ? `The call is in ${this.callLanguageName()}: answer in it. ` : '';
-    return `Note from the phone system: the connection was renewed in the middle of this call; the opening was already said. ${lang}`
-      + `The conversation so far:\n${said}\nGo on from exactly where it stopped, in the caller's language: never greet again or repeat `
-      + `the opening. If your last question was not answered, ask it once, short; otherwise wait for the caller.`;
+  // As turns (the caller's words as the user's, the AI's as the model's, tool answers as private notes) and one short
+  // private instruction: a single summary note was read out to the caller («Note: The caller previously said… Known
+  // caller information was…»).
+  private conversationSoFar(extra = ''): unknown[] {
+    const turns: { role: 'user' | 'model'; parts: { text: string }[] }[] = [];
+    for (const l of this.transcript.filter((x) => x.speaker !== 'system').slice(-40)) {
+      const role = l.speaker === 'ai' ? 'model' : 'user';
+      const text = l.speaker === 'tool' ? `[private tool answer, never to be said] ${l.body.slice(0, 300)}` : l.body.slice(0, 400);
+      const last = turns.at(-1);
+      if (last && last.role === role) last.parts[0].text += `\n${text}`;
+      else turns.push({ role, parts: [{ text }] });
+    }
+    const lang = this.lockedLanguage ? ` The call is in ${this.callLanguageName()}.` : '';
+    turns.push({ role: 'user', parts: [{ text: `[Private instruction from the phone system: never say it, read it or mention it, `
+      + `and never mention notes, tools or the phone system to the caller.] The connection was renewed; the opening was already said.${lang} `
+      + `Go on from exactly where the conversation stopped, in the caller's language: never greet again. If your last question was `
+      + `not answered, ask it once, short; otherwise wait for the caller.${extra ? ` ${extra}` : ''}` }] });
+    return turns;
   }
 
   private line(speaker: TranscriptLine['speaker'], body: string): TranscriptLine | null {
@@ -713,11 +723,11 @@ export class CallSession {
       this.step('gemini_ready');
       this.ready = true;
       if (!this.openingHeard) void this.startOpening();
-      else if (this.resumeNote) {
+      else if (this.resumeTurns) {
         // a new session mid-call: it knows what was said and goes on, no new greeting
-        const note = this.resumeNote;
-        this.resumeNote = '';
-        this.gemini?.send(JSON.stringify({ clientContent: { turns: [{ role: 'user', parts: [{ text: note }] }], turnComplete: true } }));
+        const turns = this.resumeTurns;
+        this.resumeTurns = null;
+        this.gemini?.send(JSON.stringify({ clientContent: { turns, turnComplete: true } }));
       }
     }
     const said = m.serverContent?.outputTranscription?.text;
