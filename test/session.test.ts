@@ -824,6 +824,40 @@ describe('a call', () => {
     assert.equal((await tool('f2')).ok, true, 'a move looks them up');
   });
 
+  it('a no to the read-back is never booked; a switch said by the AI before its tool is judged on the caller\'s words before it', async () => {
+    const slots = [{ start_iso: '2026-10-31T13:00:00.000Z', local_time: '09:00', spoken: 'las 9:00 de la mañana', spoken_en: '9:00 AM' }];
+    const h = harness(OPEN, (list) => list.map((t) => ({ toolCallId: t.id, name: t.name, result: JSON.stringify(
+      t.name === 'check_availability' ? { ok: true, day_spoken: 'Saturday, October 31', slots } : { ok: true, language: t.args?.language }) })));
+    await h.s.start('MZ1', ids);
+    h.gem().onOpen();
+    await h.gem().onMessage(JSON.stringify({ setupComplete: {} }));
+    await heard(h);
+    const tool = async (id: string, name: string, args: unknown = {}) => {
+      await h.gem().onMessage(JSON.stringify({ toolCall: { functionCalls: [{ id, name, args }] } }));
+      await new Promise((r) => setImmediate(r));
+      return h.sentToGemini.at(-1).toolResponse.functionResponses[0].response;
+    };
+    const ai = (text: string) => h.gem().onMessage(JSON.stringify({ serverContent: { outputTranscription: { text } } }));
+    const over = () => h.gem().onMessage(JSON.stringify({ serverContent: { turnComplete: true } }));
+    const caller = (text: string) => h.gem().onMessage(JSON.stringify({ serverContent: { inputTranscription: { text } } }));
+    await caller('.');
+    await ai('¡Hola! ¿En qué puedo ayudarle?'); // it speaks Spanish first, then sets it
+    assert.equal((await tool('l1', 'set_caller_language', { language: 'es', how: 'detected' })).reason, 'no_words_heard', 'only «.» was heard');
+    await over();
+    await caller('I want a new appointment for Saturday');
+    await tool('c1', 'check_availability');
+    await ai('Haircut with Erfan on Saturday, October 31 at 9:00 AM, is that right?'); await over();
+    await caller('No, goodbye.');
+    const no = await tool('b1', 'book_appointment', { start_iso: slots[0].start_iso });
+    assert.equal(no.reason, 'caller_said_no');
+    assert.match(no.hint, /Do not book or move/);
+    await ai('What would you like to change?'); await over();
+    await caller('Nothing, sorry. Yes, that is right.');
+    await ai('Haircut with Erfan on Saturday, October 31 at 9:00 AM, is that right?'); await over();
+    await caller('Yes.');
+    assert.equal((await tool('b2', 'book_appointment', { start_iso: slots[0].start_iso })).ok, true);
+  });
+
   it('cancel_appointment only after a question about that one appointment: the list of the caller\'s appointments is not it (once)', async () => {
     const appts = [{ appointment_id: 'a1', local_time: '09:00' }, { appointment_id: 'a2', local_time: '14:30' }];
     const sent: string[] = [];
