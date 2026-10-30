@@ -723,6 +723,23 @@ describe('a call', () => {
     assert.deepEqual(sent.filter((n) => n === 'cancel_appointment').length, 1);
   });
 
+  it('before the call\'s language is set, one word («ببینید») does not switch the opening\'s language either; two do', async () => {
+    const h = harness(OPEN, (list) => list.map((t) => ({ toolCallId: t.id, name: t.name, result: JSON.stringify({ ok: true, language: t.args.language, saved: false }) })));
+    await h.s.start('MZ1', ids);
+    h.gem().onOpen();
+    await h.gem().onMessage(JSON.stringify({ setupComplete: {} }));
+    await heard(h);
+    const tool = async (id: string) => {
+      await h.gem().onMessage(JSON.stringify({ toolCall: { functionCalls: [{ id, name: 'set_caller_language', args: { language: 'fa-IR', how: 'detected' } }] } }));
+      await new Promise((r) => setImmediate(r));
+      return h.sentToGemini.at(-1).toolResponse.functionResponses[0].response;
+    };
+    await h.gem().onMessage(JSON.stringify({ serverContent: { inputTranscription: { text: 'ببینید <noise>' } } }));
+    assert.equal((await tool('l1')).reason, 'no_words_heard');
+    await h.gem().onMessage(JSON.stringify({ serverContent: { inputTranscription: { text: ' یه نوبت می‌خواستم' } } }));
+    assert.equal((await tool('l2')).ok, true);
+  });
+
   it('once the call is in English, one word («Bueno») does not switch it; a whole sentence or a request does', async () => {
     const h = harness(OPEN, (list) => list.map((t) => ({ toolCallId: t.id, name: t.name, result: JSON.stringify({ ok: true, language: t.args.language, saved: false }) })));
     await h.s.start('MZ1', ids);
