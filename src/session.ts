@@ -39,6 +39,7 @@ const GOODBYE_MAX_MS = 15000; // safety: hang up even if the goodbye never compl
 const TIME_WARNING_S = 40; // seconds before the call cap when the AI is told to wrap up (enough to take a message)
 const TIME_NUDGE = 'About 40 seconds are left in this call. If the caller already chose a time: read it back and, after their yes, call book_appointment now. Never say it is booked unless book_appointment answered ok. If it cannot be finished, ask the caller: shall I connect you to the barber, or take a message for the barber? (Offer to connect them only if the salon is open now; otherwise offer only the message.) Then stop and wait for the answer. If they want a message, take it with take_message, then say a short goodbye in the caller\'s language and call end_call. Never say goodbye in the same turn as a question.';
 // words that say something was booked, cancelled or moved (en, es, fa): never true before a tool said so (hard rule 8)
+const GOODBYE = /خدانگهدار|خداحافظ|\bgood ?bye\b|\bbye\b|adi[oó]s|hasta (luego|pronto)/i;
 const DONE_CLAIM = /\b(is booked|are booked|you're booked|you are booked|booked you|is all set|has been (booked|cancel+ed|moved|rescheduled)|is cancel+ed|(qued[oó]|est[aá]|ya est[aá]) (reservad[ao]|agendad[ao]|confirmad[ao]|cancelad[ao])|ha sido (reservad[ao]|cancelad[ao]))\b|ثبت شد|رزرو شد|رزرو کردم|ثبت کردم|لغو شد|جابجا شد/i;
 const FALSE_CLAIM = 'Correction: nothing has been booked, cancelled or moved in this call: no tool answered ok. Tell the caller right away, in their language, that it is not done yet. Then read the appointment back, and after their yes call book_appointment (or the tool they need). Never say it is done before the tool answers ok.';
 // a time of day said out loud (en, es, fa): an offer of times is only real after check_availability answered
@@ -111,6 +112,7 @@ export class CallSession {
   private slotWords = new Map<string, string[]>(); // a free time (start_iso) as check_availability said it
   private readBackRefused = 0;
   private notOfferedRefused = 0;
+  private readBackFor = new Set<number>(); // times the AI already read back with a question (an earlier turn counts too)
   private bookAfterListRefused = 0;
   private listingPending = false; // find_my_appointments answered: the AI's turn now lists them
   private listText = ''; // that turn's words (the list, not the confirmation)
@@ -474,11 +476,16 @@ export class CallSession {
   /** The AI's last finished turn read the booking back: it said the chosen time and asked if it is right. */
   private readBackDone(start: unknown): boolean {
     if (typeof start !== 'string') return true;
+    if (this.readBackFor.has(Date.parse(start))) return true;
+    return this.readBackIn(start, this.lastTurns.at(-1) ?? '');
+  }
+
+  /** This AI turn read the booking back: it said that time (and no other offered one) and asked if it is right. */
+  private readBackIn(start: string, last: string): boolean {
     const t = Date.parse(start);
     const key = [...this.slotWords.keys()].find((iso) => iso === start || Date.parse(iso) === t) ?? start;
     const words = this.slotWords.get(key);
     if (!words?.length) return true; // a time this call did not offer (nothing to compare): the database still checks it
-    const last = this.lastTurns.at(-1) ?? '';
     if (!/[?؟]/.test(last) || !words.some((w) => last.includes(w))) return false;
     // the offer itself («…نه و نیم صبح، دو بعد از ظهر یا شش و نیم عصر… کدوم؟») has the chosen time and a question
     // too: a read-back names only the chosen time, never another one that was offered
@@ -593,6 +600,17 @@ export class CallSession {
       if (this.turnText.trim()) {
         this.lastTurns.push(this.turnText); if (this.lastTurns.length > 6) this.lastTurns.shift();
         if (this.listingPending) { this.listText = this.turnText; this.listingPending = false; }
+        // a read-back stays done: the move test read it back, then a re-ask («جابجا بشه؟») was the last turn and
+        // the move was held again
+        for (const iso of this.slotWords.keys()) if (this.readBackIn(iso, this.turnText)) this.readBackFor.add(Date.parse(iso));
+        // the AI said goodbye after the call's work was done but did not call end_call: hang up once it is played
+        // (it said «خدانگهدار», then a re-ask asked «کار دیگه‌ای دارید؟» again)
+        if (this.outcome && !this.hangUpWhenSaid && GOODBYE.test(this.turnText) && !/[?؟]/.test(this.turnText)) {
+          this.log('goodbye_heard', {});
+          this.endedReason = 'assistant-ended-call';
+          this.hangUpWhenSaid = true;
+          this.timers.push(this.deps.setTimer(GOODBYE_MAX_MS, () => void this.hangUp()));
+        }
       }
       this.turnText = '';
       this.turnTool = false;
