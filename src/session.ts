@@ -123,7 +123,8 @@ export class CallSession {
   private notOfferedRefused = 0;
   private slotDays = new Map<string, string[]>(); // the day of each offered time, as check_availability said it
   private knownIds = new Set<string>(); // every id this call was given (the salon's facts, tool answers)
-  private readBackFor = new Set<number>(); // times the AI already read back with a question (an earlier turn counts too)
+  private lastReadBack: number | null = null; // the time the AI last read back with a question, until it names another time
+  private readBackAnswered = false; // the caller spoke after that read-back
   private bookAfterListRefused = 0;
   private listingPending = false; // find_my_appointments answered: the AI's turn now lists them
   private listText = ''; // that turn's words (the list, not the confirmation)
@@ -543,7 +544,7 @@ export class CallSession {
   /** The AI's last finished turn read the booking back: it said the chosen time and asked if it is right. */
   private readBackDone(start: unknown): boolean {
     if (typeof start !== 'string') return true;
-    if (this.readBackFor.has(Date.parse(start))) return true;
+    if (this.lastReadBack === Date.parse(start)) return true;
     return this.readBackIn(start, this.lastTurns.at(-1) ?? '');
   }
 
@@ -625,7 +626,7 @@ export class CallSession {
     // re-ask now (a re-ask over a quiet "yes" made the AI ask again, or offer a message instead of booking)
     const heardText = m.serverContent?.inputTranscription?.text;
     if (typeof heardText === 'string') this.heardChars += heardText.trim().length;
-    if (typeof heardText === 'string' && heardText.trim()) { this.words('caller', heardText); this.callerAt = this.deps.now().getTime(); }
+    if (typeof heardText === 'string' && heardText.trim()) { this.words('caller', heardText); this.callerAt = this.deps.now().getTime(); this.readBackAnswered = true; }
     if (typeof heardText === 'string' && heardText.trim()) {
       this.aiWaitingSince = 0;
       this.lastLoudAt = this.deps.now().getTime();
@@ -692,7 +693,10 @@ export class CallSession {
         if (this.listingPending) { this.listText = this.turnText; this.listingPending = false; }
         // a read-back stays done: the move test read it back, then a re-ask («جابجا بشه؟») was the last turn and
         // the move was held again
-        for (const iso of this.slotWords.keys()) if (this.readBackIn(iso, this.turnText)) this.readBackFor.add(Date.parse(iso));
+        // the last read-back stays until a later turn names another offered time (the caller chose again)
+        const readBack = [...this.slotWords.keys()].find((iso) => this.readBackIn(iso, this.turnText));
+        if (readBack) { this.lastReadBack = Date.parse(readBack); this.readBackAnswered = false; }
+        else if ([...this.slotWords.entries()].some(([iso, w]) => Date.parse(iso) !== this.lastReadBack && w[0] && this.turnText.includes(w[0]))) this.lastReadBack = null;
         // the AI said goodbye after the call's work was done but did not call end_call: hang up once it is played
         // (it said «خدانگهدار», then a re-ask asked «کار دیگه‌ای دارید؟» again)
         if (this.outcome && !this.hangUpWhenSaid && GOODBYE.test(this.turnText) && !/[?؟]/.test(this.turnText)) {
@@ -813,7 +817,10 @@ export class CallSession {
       }
       // the read-back is in this very turn: the AI did not wait for the answer («…درسته؟» and the tool at once). Held
       // each time (twice a call), not only the first: the times test booked «…درسته؟ ثبت شد» in one breath
-      if (typeof start === 'string' && this.noWaitRefused < 2 && /[?؟]/.test(this.turnText) && this.readBackIn(start, this.turnText)) {
+      // (not when an earlier turn already read this time back: «I have booked you for … Is there anything else?» after the
+      // caller's yes looks like a read-back too, and holding it made the AI say «system error»)
+      if (typeof start === 'string' && this.noWaitRefused < 2 && !(this.lastReadBack === Date.parse(start) && this.readBackAnswered)
+          && /[?؟]/.test(this.turnText) && this.readBackIn(start, this.turnText)) {
         held.add(c.id);
         noWait.add(c.id);
         this.noWaitRefused += 1;
