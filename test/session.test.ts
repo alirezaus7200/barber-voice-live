@@ -443,6 +443,7 @@ describe('a call', () => {
     assert.deepEqual(sentToCore.filter((n) => n !== 'previous_visit_reminder'), ['check_availability'], 'not sent to barber-core');
     assert.ok(h.logs.some(([e]) => e === 'read_back_missing'));
     await turn('اصلاح مو با عرفان، جمعه سی‌ام اکتبر ساعت نه صبح، به نام علیرضا نعمتی. درسته؟');
+    await turn('درسته؟'); // a re-ask after the read-back: the read-back still counts
     assert.equal((await tool('b2', 'book_appointment', { start_iso: slots[0].start_iso })).ok, true);
     assert.deepEqual(sentToCore.filter((n) => n !== 'previous_visit_reminder'), ['check_availability', 'book_appointment']);
   });
@@ -1041,6 +1042,27 @@ describe('a call', () => {
     await h.gem().onMessage(JSON.stringify({ toolCall: { functionCalls: [{ id: 'e1', name: 'end_call' }] } }));
     await new Promise((r) => setImmediate(r));
     assert.equal(h.sentToGemini.at(-1).toolResponse.functionResponses.at(-1).response.ok, true);
+  });
+
+  it('a goodbye after the work is done hangs up once it is played, even without end_call; a goodbye with a question does not', async () => {
+    const h = harness(OPEN, (list) => list.map((t) => ({ toolCallId: t.id, name: t.name, result: '{"ok":true}' })));
+    await h.s.start('MZ1', ids);
+    h.gem().onOpen();
+    await h.gem().onMessage(JSON.stringify({ setupComplete: {} }));
+    await heard(h);
+    const turn = async (text: string) => {
+      await h.gem().onMessage(JSON.stringify({ serverContent: { outputTranscription: { text } } }));
+      await h.gem().onMessage(JSON.stringify({ serverContent: { turnComplete: true } }));
+    };
+    await turn('خدانگهدار. کار دیگه‌ای دارید؟');
+    assert.ok(!h.logs.some(([e]) => e === 'goodbye_heard'), 'nothing done yet');
+    await h.gem().onMessage(JSON.stringify({ toolCall: { functionCalls: [{ id: 'r1', name: 'take_message', args: { message: 'x' } }] } }));
+    await new Promise((r) => setImmediate(r));
+    await turn('خدانگهدار. کار دیگه‌ای دارید؟');
+    assert.ok(!h.logs.some(([e]) => e === 'goodbye_heard'), 'a question is still waiting for an answer');
+    await turn('خدانگهدار.');
+    assert.ok(h.logs.some(([e]) => e === 'goodbye_heard'));
+    assert.deepEqual(h.sentToTwilio.at(-1), { event: 'mark', streamSid: 'MZ1', mark: { name: 'goodbye' } }, 'hangs up once Twilio played it');
   });
 
   it('40 seconds before the call cap the AI asks one question (finish, or a message), waits for the answer, and may then end at once', async () => {
