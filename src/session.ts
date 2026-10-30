@@ -40,7 +40,7 @@ const TIME_WARNING_S = 40; // seconds before the call cap when the AI is told to
 const TIME_NUDGE = 'About 40 seconds are left in this call. If the caller already chose a time: read it back and, after their yes, call book_appointment now. Never say it is booked unless book_appointment answered ok. If it cannot be finished, ask the caller: shall I connect you to the barber, or take a message for the barber? (Offer to connect them only if the salon is open now; otherwise offer only the message.) Then stop and wait for the answer. If they want a message, take it with take_message, then say a short goodbye in the caller\'s language and call end_call. Never say goodbye in the same turn as a question.';
 // words that say something was booked, cancelled or moved (en, es, fa): never true before a tool said so (hard rule 8)
 const GOODBYE = /خدانگهدار|خداحافظ|\bgood ?bye\b|\bbye\b|adi[oó]s|hasta (luego|pronto)/i;
-const DONE_CLAIM = /\b(is booked|are booked|you're booked|you are booked|booked you|is all set|has been (booked|cancel+ed|moved|rescheduled)|is cancel+ed|(qued[oó]|est[aá]|ya est[aá]) (reservad[ao]|agendad[ao]|confirmad[ao]|cancelad[ao])|ha sido (reservad[ao]|cancelad[ao]))\b|ثبت شد|رزرو شد|رزرو کردم|ثبت کردم|لغو شد|جابجا شد/i;
+const DONE_CLAIM = /\b(is booked|are booked|you're booked|you are booked|booked you|is all set|has been (booked|cancel+ed|moved|rescheduled)|is cancel+ed|(qued[oó]|est[aá]|ya est[aá]) (reservad[ao]|agendad[ao]|confirmad[ao]|cancelad[ao])|ha sido (reservad[ao]|cancelad[ao]))\b|ثبت شد|رزرو شد|رزرو کردم|ثبت کردم|لغو شد|جابجا شد|انجام شد/i;
 const FALSE_CLAIM = 'Correction: nothing has been booked, cancelled or moved in this call: no tool answered ok. Tell the caller right away, in their language, that it is not done yet. Then read the appointment back, and after their yes call book_appointment (or the tool they need). Never say it is done before the tool answers ok.';
 // a time of day said out loud (en, es, fa): an offer of times is only real after check_availability answered
 const TIME_SAID = /\b\d{1,2}[:.]\d{2}\b|[۰-۹]{1,2}[:٫][۰-۹]{2}|\b\d{1,2}\s?(a\.?m\.?|p\.?m\.?)(?![a-z])|ساعت\s*([\d۰-۹]|یک|دو|سه|چهار|پنج|شش|هفت|هشت|نه|ده|یازده|دوازده)|\ba las (\d|una|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez|once|doce)\b/i;
@@ -57,6 +57,7 @@ const TURN_PREROLL_FRAMES = 10; // Twilio sends 20 ms frames
 // book_appointment only after the read-back (hard rule): the AI's last turn before it must have said the chosen time,
 // as check_availability gave it, and asked if it is right; else it is told to read back first (once a call)
 const NOT_OFFERED = 'Not booked yet: check_availability did not give that time. Call check_availability for that day with earliest_time set to it; use only a start_iso it returns, read it back, and book after a clear yes.';
+const READ_BACK_WAIT = 'Not done yet: you asked "Is that right?" and called the tool in the same breath. Say nothing more now and never say it is done; wait for the caller\'s answer, and only after a clear yes call the same tool again.';
 const READ_BACK_FIRST = 'Not booked yet. First read it all back in one sentence (staff member, services, weekday, date, time and the name) and ask "Is that right?"; call book_appointment again only after a clear yes.';
 // cancel_appointment only after the caller said yes to that one appointment: the list of their appointments
 // («…کدوم رو می‌خواید لغو کنید؟») is not that question, unless it had only one (once a call)
@@ -105,6 +106,7 @@ export class CallSession {
   private reasks = 0; // re-asks since the AI last answered the caller (at most 2; 1 before the caller ever spoke)
   private talked = false; // the AI has answered the caller once (a conversation started)
   private turnText = ''; // what the AI said in this turn (output transcription)
+  private claimText = ''; // this turn's words since the last false claim was corrected
   private turnTool = false; // the AI asked for a tool in this turn
   private lockedLanguage: string | null = null; // the caller's language, once set_caller_language fixed it
   private muteRestOfTurn = false; // the AI asked its question, then set the language: the rest of this turn is its repeat
@@ -497,9 +499,10 @@ export class CallSession {
   /** The AI said something was booked (cancelled, moved) but no tool answered ok: it must correct itself now. */
   private checkClaim(text: string) {
     this.turnText = (this.turnText + text).slice(-600);
-    if (this.outcome || this.falseClaims >= 2 || !DONE_CLAIM.test(this.turnText)) return;
+    this.claimText = (this.claimText + text).slice(-600);
+    if (this.outcome || this.falseClaims >= 2 || !DONE_CLAIM.test(this.claimText)) return;
     this.falseClaims++;
-    this.turnText = '';
+    this.claimText = ''; // the turn keeps its words (a read-back in it still counts)
     this.log('false_claim_corrected', {});
     // the call does not end on it: the next end_call is refused until something really happened
     this.refusedEnd = false;
@@ -613,6 +616,7 @@ export class CallSession {
         }
       }
       this.turnText = '';
+      this.claimText = '';
       this.turnTool = false;
       this.muteRestOfTurn = false;
       this.turnAudio = false;
@@ -664,6 +668,7 @@ export class CallSession {
     // a booking with no read-back before it is not sent: the AI reads back first (once a call)
     const held = new Set<string>();
     const notOffered = new Set<string>(); // held because check_availability never gave that time
+    const noWait = new Set<string>(); // read back in the same turn as the tool call: it did not wait for a yes
     const moveNotBook = new Set<string>(); // a new booking while the caller's appointments are on the table
     // an appointment id the AI made up (not one find_my_appointments gave): it is told the real ones, never sent
     const badId = new Map<string, unknown>();
@@ -712,7 +717,9 @@ export class CallSession {
       if (this.readBackRefused >= 1 || this.readBackDone(start)) continue;
       held.add(c.id);
       this.readBackRefused += 1;
-      this.log('read_back_missing', {});
+      // the read-back is in this very turn: the AI did not wait for the answer (the move test: «…درسته؟» and the tool)
+      if (typeof start === 'string' && /[?؟]/.test(this.turnText) && this.readBackIn(start, this.turnText)) noWait.add(c.id);
+      this.log('read_back_missing', noWait.has(c.id) ? { same_turn: true } : {});
     }
     const forCore = calls.filter((c) => CORE_TOOL_NAMES.has(c.name) && !held.has(c.id));
     let results: { toolCallId: string; result: string }[] = [];
@@ -742,7 +749,7 @@ export class CallSession {
           ? { ok: false, reason: 'time_not_offered', hint: NOT_OFFERED }
           : cancel
           ? { ok: false, reason: 'confirm_first', hint: CONFIRM_CANCEL }
-          : { ok: false, reason: 'read_back_first', hint: READ_BACK_FIRST } });
+          : { ok: false, reason: 'read_back_first', hint: noWait.has(c.id) ? READ_BACK_WAIT : READ_BACK_FIRST } });
         continue;
       }
       if (c.name === 'end_call' && !this.hangUpWhenSaid && !this.nudged && this.askedAt > this.callerAt && this.endRefusedForQuestion < 2) {
